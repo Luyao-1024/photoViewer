@@ -94,10 +94,30 @@ fn rt() -> tokio::runtime::Runtime {
 fn revisions(f: &Fixture) {
     let asset = json!({"recordName":"cloud-photo","recordType":"CPLAsset","recordChangeTag":"revision","fields":{}});
     let master = json!({"recordName":"cloud-master","recordType":"CPLMaster","recordChangeTag":"revision","fields":{}});
-    f.service.pool().get().unwrap().execute(
-        "UPDATE sync_entries SET native_pending_asset=?2,native_pending_master=?3 WHERE job_id=?1 AND relative_path='album/photo.jpg'",
-        rusqlite::params![f.job.id,asset.to_string(),master.to_string()],
-    ).unwrap();
+    let conn = f.service.pool().get().unwrap();
+    let entry: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM sync_entries WHERE job_id=?1 AND relative_path='album/photo.jpg'",
+            [f.job.id],
+            |r| r.get(0),
+        )
+        .ok();
+    if let Some(entry) = entry {
+        crate::core::sync::store::records::set_pending(
+            &conn,
+            entry,
+            false,
+            Some(&serde_json::from_value(asset).unwrap()),
+        )
+        .unwrap();
+        crate::core::sync::store::records::set_pending(
+            &conn,
+            entry,
+            true,
+            Some(&serde_json::from_value(master).unwrap()),
+        )
+        .unwrap();
+    }
 }
 
 #[test]
@@ -253,7 +273,7 @@ fn different_sizes_do_not_hash_before_preserving_the_local_file() {
         .get()
         .unwrap()
         .query_row(
-            "SELECT COUNT(*) FROM sync_entries WHERE native_local_digest IS NOT NULL",
+            "SELECT COUNT(*) FROM sync_entries WHERE native_digest_sha256 IS NOT NULL",
             [],
             |r| r.get(0),
         )

@@ -17,10 +17,14 @@ mod actions;
 mod configuration;
 pub use actions::{ManagedPhoto, PhotoAction};
 pub mod dirty;
+pub(crate) mod issued;
 pub mod publication;
 pub mod receive;
+pub(crate) mod records;
+pub(crate) mod recovery;
 mod reset;
 pub(crate) mod runtime;
+pub(crate) mod state;
 pub use configuration::{JobEdit, PendingChange};
 pub use dirty::{
     note_local_change_in, CategoryOutcome, ChangeCategory, ConfirmedIdentity, DirtyCommand,
@@ -335,24 +339,7 @@ impl SyncStore {
     /// native job must not run.
     pub fn native_scope(&self, connection_id: i64) -> Result<Option<NativePinnedScope>> {
         let conn = self.pool.get()?;
-        let pinned: Option<String> = conn
-            .query_row(
-                "SELECT native_pinned_scope FROM sync_connections
-                 WHERE id = ?1 AND provider_kind = 'native_syncserver'",
-                [connection_id],
-                |row| row.get(0),
-            )
-            .optional()?
-            .flatten();
-        match pinned {
-            // A malformed pinned document is a corrupt connection, not an
-            // absent one: reporting it as absent would silently downgrade a
-            // native job to "never probed" instead of surfacing the problem.
-            Some(document) => serde_json::from_str(&document)
-                .map(Some)
-                .map_err(configuration::json_error),
-            None => Ok(None),
-        }
+        state::read_scope(&conn, connection_id)
     }
 
     pub fn set_job_paused(&self, id: i64, paused: bool) -> Result<()> {
@@ -738,7 +725,7 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
             revision,
             error,
         } => {
-            pool.get()?.execute("UPDATE sync_jobs SET last_error=?1 WHERE id=?2 AND EXISTS(SELECT 1 FROM sync_job_changes WHERE job_id=?2 AND json_extract(payload,'$.revision')=?3)",params![error,id,revision])?;
+            pool.get()?.execute("UPDATE sync_jobs SET last_error=?1 WHERE id=?2 AND EXISTS(SELECT 1 FROM sync_job_changes WHERE job_id=?2 AND revision=?3)",params![error,id,revision])?;
             Ok(SyncWriteResult::None)
         }
         SyncWrite::Runtime(command) => {
@@ -768,7 +755,7 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
             })?;
             let existing = {
                 let mut stmt = tx.prepare(
-                    "SELECT j.local_root, c.endpoint, j.native_zone_name, c.native_tenant, c.native_pinned_scope
+                    "SELECT j.local_root, c.endpoint, j.native_zone_name, c.native_tenant, c.id
                      FROM sync_jobs j JOIN sync_connections c ON c.id = j.connection_id",
                 )?;
                 let rows = stmt.query_map([], |row| {
@@ -777,7 +764,7 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, Option<String>>(3)?,
-                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, i64>(4)?,
                     ))
                 })?;
                 rows.collect::<rusqlite::Result<Vec<_>>>()?
@@ -790,11 +777,7 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
                 existing_scope,
             ) in existing
             {
-                let existing_scope: Option<NativePinnedScope> = existing_scope
-                    .as_deref()
-                    .map(serde_json::from_str)
-                    .transpose()
-                    .map_err(configuration::json_error)?;
+                let existing_scope = state::read_scope(&tx, existing_scope)?;
                 let same_account = existing_scope
                     .as_ref()
                     .zip(job.native_pinned.as_ref())
@@ -969,36 +952,12 @@ fn create_connection(tx: &rusqlite::Transaction<'_>, job: &NewSyncJob) -> Result
         )
         .optional()?;
     let Some((connection_id, stored_kind)) = existing else {
-        let pinned = job.native_pinned.as_ref();
-        tx.execute(
-            "INSERT INTO sync_connections
-             (enabled, provider_kind, endpoint, credential_ref,
-              native_public_base_url, native_protocol_version, native_service_version,
-              native_stage, native_checksum_algorithm, native_tenant, native_container,
-              native_environment, native_database, native_database_generation, native_zones,
-              native_pinned_scope, native_probed_at)
-             VALUES (0, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                     CASE WHEN ?16 IS NULL THEN NULL ELSE unixepoch() END)",
-            params![
-                job.provider_kind.as_str(),
-                job.endpoint,
-                job.credential_ref,
-                pinned.map(|p| p.public_base_url.clone()),
-                pinned.map(|p| p.protocol_version),
-                pinned.map(|p| p.service_version.clone()),
-                pinned.map(|p| p.stage.clone()),
-                pinned.map(|p| p.checksum_algorithm.clone()),
-                pinned.map(|p| p.namespace.tenant.clone()),
-                pinned.map(|p| p.namespace.container.clone()),
-                pinned.map(|p| p.namespace.environment.clone()),
-                pinned.map(|p| p.namespace.database.clone()),
-                pinned.map(|p| p.database_generation.clone()),
-                pinned.and_then(|p| serde_json::to_string(&p.zones).ok()),
-                pinned.and_then(|p| serde_json::to_string(p).ok()),
-                pinned.map(|p| p.public_base_url.clone()),
-            ],
-        )?;
-        return Ok(tx.last_insert_rowid());
+        tx.execute("INSERT INTO sync_connections(enabled,provider_kind,endpoint,credential_ref) VALUES(0,?1,?2,?3)",params![job.provider_kind.as_str(),job.endpoint,job.credential_ref])?;
+        let id = tx.last_insert_rowid();
+        if let Some(scope) = &job.native_pinned {
+            state::write_scope(tx, id, scope)?;
+        }
+        return Ok(id);
     };
 
     if stored_kind != job.provider_kind.as_str() {
@@ -1007,40 +966,13 @@ fn create_connection(tx: &rusqlite::Transaction<'_>, job: &NewSyncJob) -> Result
              native connections are created explicitly and are never converted"
         )));
     }
-    match &job.native_pinned {
-        Some(pinned) => tx.execute(
-            "UPDATE sync_connections SET endpoint = ?1,
-                    native_public_base_url = ?2, native_protocol_version = ?3,
-                    native_service_version = ?4, native_stage = ?5, native_checksum_algorithm = ?6,
-                    native_tenant = ?7, native_container = ?8, native_environment = ?9,
-                    native_database = ?10, native_database_generation = ?11, native_zones = ?12,
-                    native_pinned_scope = ?13, native_probed_at = unixepoch(),
-                    native_probe_error = NULL,
-                    updated_at = unixepoch()
-             WHERE id = ?14",
-            params![
-                job.endpoint,
-                pinned.public_base_url,
-                pinned.protocol_version,
-                pinned.service_version,
-                pinned.stage,
-                pinned.checksum_algorithm,
-                pinned.namespace.tenant,
-                pinned.namespace.container,
-                pinned.namespace.environment,
-                pinned.namespace.database,
-                pinned.database_generation,
-                serde_json::to_string(&pinned.zones).map_err(configuration::json_error)?,
-                serde_json::to_string(pinned).map_err(configuration::json_error)?,
-                connection_id,
-            ],
-        )?,
-        None => tx.execute(
-            "UPDATE sync_connections SET endpoint = ?1, updated_at = unixepoch()
-             WHERE id = ?2",
-            params![job.endpoint, connection_id],
-        )?,
-    };
+    tx.execute(
+        "UPDATE sync_connections SET endpoint=?1,updated_at=unixepoch() WHERE id=?2",
+        params![job.endpoint, connection_id],
+    )?;
+    if let Some(scope) = &job.native_pinned {
+        state::write_scope(tx, connection_id, scope)?;
+    }
     Ok(connection_id)
 }
 

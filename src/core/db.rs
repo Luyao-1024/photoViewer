@@ -201,7 +201,7 @@ pub(crate) fn upsert_media_items_in(
     let mut out = Vec::with_capacity(items.len());
     for item in items {
         let blocked: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sync_publications WHERE state='publishing' AND json_extract(role_state,'$.target')=?1 AND (?2 IS NULL OR publication_id<>?2))",
+            "SELECT EXISTS(SELECT 1 FROM sync_publications WHERE state='publishing' AND recovery_target=?1 AND (?2 IS NULL OR publication_id<>?2))",
             rusqlite::params![item.path.to_string_lossy(), publication], |row|row.get(0))?;
         if blocked {
             continue;
@@ -566,6 +566,39 @@ pub(crate) fn invalidate_thumbnail_marks(pool: &DbPool, ids: &[i64]) -> Result<(
             "UPDATE media_items SET thumbnail_generated_at=NULL,thumbnail_ready=0 WHERE id=?1",
             [id],
         )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Reconcile a cache observation only while its source identity is unchanged.
+/// File probing happens before this short transaction, outside the actor.
+pub(crate) fn reconcile_thumbnail_marks(
+    pool: &DbPool,
+    items: &[MediaItem],
+    ready: bool,
+) -> Result<()> {
+    let mut conn = pool.get()?;
+    let tx = conn.transaction()?;
+    {
+        let mut statement = tx.prepare(
+            "UPDATE media_items
+             SET thumbnail_ready=?1,thumbnail_generated_at=CASE WHEN ?1 THEN unixepoch() ELSE NULL END
+             WHERE id=?2 AND uri=?3 AND file_size=?4 AND storage_location<>2
+               AND (file_mtime_ns=?5 OR (file_mtime_ns=0 AND file_mtime=?6))
+               AND (thumbnail_ready<>?1 OR (?1=0 AND thumbnail_generated_at IS NOT NULL)
+                    OR (?1=1 AND thumbnail_generated_at IS NULL))",
+        )?;
+        for item in items {
+            statement.execute(rusqlite::params![
+                ready,
+                item.id,
+                item.uri,
+                item.file_size as i64,
+                ts_ns(item.file_mtime),
+                ts(item.file_mtime),
+            ])?;
+        }
     }
     tx.commit()?;
     Ok(())

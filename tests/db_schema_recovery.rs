@@ -23,7 +23,6 @@ fn seed(path: &Path, schema: &str) {
          INSERT INTO sync_jobs(id,connection_id,local_root,native_zone_name,paused)
          VALUES(2,1,'/paused','PausedSync',1);
          INSERT INTO sync_job_upload_albums VALUES(1,'Camera');
-         INSERT INTO sync_job_changes VALUES(1,'{}');
          INSERT INTO sync_entries(id,job_id,media_id,relative_path,native_dirty,native_photo_id)
          VALUES(1,1,1,'Camera/a.jpg',4,'old-photo');
          INSERT INTO sync_tasks(operation_id,job_id,entry_id,action,state,config_generation,entry_generation)
@@ -35,6 +34,20 @@ fn seed(path: &Path, schema: &str) {
          INSERT INTO sync_native_resources(job_id,generation,asset_id,role) VALUES(1,'g','old-asset','original');
          CREATE INDEX retained_progress_index ON sync_native_progress(updated_at);",
     ).unwrap();
+    let legacy:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('sync_job_changes') WHERE name='payload')",[],|r|r.get(0)).unwrap();
+    if legacy {
+        conn.execute(
+            "INSERT INTO sync_job_changes(job_id,payload) VALUES(1,'{}')",
+            [],
+        )
+        .unwrap();
+    } else {
+        conn.execute(
+            "INSERT INTO sync_job_changes(job_id,revision) VALUES(1,0)",
+            [],
+        )
+        .unwrap();
+    }
 }
 
 fn count(conn: &Connection, table: &str) -> i64 {
@@ -337,4 +350,131 @@ fn one_unreferenced_table_can_be_rebuilt_without_losing_other_library_data() {
     }
     assert_eq!(count(&conn, "sync_jobs"), 2);
     assert_eq!(count(&conn, "sync_native_progress"), 0);
+}
+
+#[test]
+fn confirmed_media_locations_recover_after_adding_fields_or_reopening() {
+    for missing_fields in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("photos.db");
+        let schema = if missing_fields {
+            SCHEMA
+                .replace("    storage_location INTEGER NOT NULL DEFAULT 1 CHECK (storage_location IN (1,2,3)),\n", "")
+                .replace("    thumbnail_ready INTEGER NOT NULL DEFAULT 0 CHECK (thumbnail_ready IN (0,1))\n", "")
+                .replace("    thumbnail_generated_at INTEGER,\n", "    thumbnail_generated_at INTEGER\n")
+        } else {
+            SCHEMA.to_owned()
+        };
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(&schema).unwrap();
+        conn.execute_batch(
+            "INSERT INTO sync_connections(id,endpoint,credential_ref,enabled) VALUES
+                (1,'https://sync.example.invalid/','current',1),
+                (2,'https://other.example.invalid/','inactive',0);
+             INSERT INTO sync_jobs(id,connection_id,local_root,native_zone_name) VALUES(1,1,'/photos','PrimarySync'),(2,2,'/other','PrimarySync');",
+        ).unwrap();
+        for (id, job, confirmed, dirty, retired) in [
+            (1, 1, Some("generation"), 0, 0),
+            (2, 1, Some("generation"), 2, 0),
+            (3, 1, Some("generation"), 0, 1),
+            (4, 2, Some("generation"), 0, 0),
+            (5, 1, None, 1, 0),
+        ] {
+            conn.execute("INSERT INTO media_items(id,uri,path,folder_path,mime_type,file_mtime,file_size,blake3_hash,indexed_at) VALUES(?1,?2,?3,'/photos','image/jpeg',1,10,'',1)", rusqlite::params![id,format!("file:///photos/{id}.jpg"),format!("/photos/{id}.jpg")]).unwrap();
+            conn.execute("INSERT INTO sync_entries(id,job_id,media_id,relative_path,native_photo_id,native_confirmed_generation,native_dirty,native_retired,native_local_version,native_metadata_version) VALUES(?1,?2,?1,?3,?4,?5,?6,?7,3,3)", rusqlite::params![id,job,format!("{id}.jpg"),format!("photo-{id}"),confirmed,dirty,retired]).unwrap();
+        }
+        drop(conn);
+        let pool = db::init_pool(&path).unwrap();
+        let conn = pool.get().unwrap();
+        let rows = conn.prepare("SELECT m.id,m.storage_location,m.thumbnail_ready,e.native_dirty,e.native_local_version,e.native_metadata_version FROM media_items m JOIN sync_entries e ON e.media_id=m.id ORDER BY m.id").unwrap()
+            .query_map([], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,bool>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,i64>(5)?)))
+            .unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (1, 3, false, 0, 3, 3),
+                (2, 3, false, 2, 3, 3),
+                (3, 1, false, 0, 3, 3),
+                (4, 1, false, 0, 3, 3),
+                (5, 1, false, 1, 3, 3)
+            ],
+            "missing_fields={missing_fields}"
+        );
+    }
+}
+
+#[test]
+fn legacy_photo_documents_become_indexed_columns_without_losing_deletion_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("photos.db");
+    seed(&path, include_str!("fixtures/native_sync_legacy.sql"));
+    let conn = Connection::open(&path).unwrap();
+    conn.execute(
+        "INSERT INTO settings(key,value) VALUES('sync_reset_pending',?1)",
+        [serde_json::json!({"token":"pending-reset","error":"retry cleanup"}).to_string()],
+    )
+    .unwrap();
+    let record = serde_json::json!({"recordName":"old-photo","recordType":"CPLAsset","recordChangeTag":"incoming-revision","fields":{"relativePath":{"type":"STRING","value":"Camera/a.jpg"},"masterRef":{"type":"REFERENCE","value":{"recordName":"master","action":"NONE"}}}});
+    let event = serde_json::json!({"editedAtMs":123,"source":"device","eventId":"delete-event"});
+    conn.execute("UPDATE sync_entries SET native_local_version=4,native_deletion_version=2,native_deletion_event=?1,native_pending_asset=?2 WHERE id=1",rusqlite::params![event.to_string(),record.to_string()]).unwrap();
+    drop(conn);
+    let pool = db::init_pool(&path).unwrap();
+    let conn = pool.get().unwrap();
+    let columns = conn
+        .prepare("PRAGMA table_info(sync_entries)")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(1))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    for name in [
+        "native_metadata_event",
+        "native_content_event",
+        "native_deletion_event",
+        "native_resource_baseline",
+        "native_pending_asset",
+        "native_pending_master",
+        "native_local_digest",
+    ] {
+        assert!(
+            !columns.iter().any(|c| c == name),
+            "retained document column {name}"
+        );
+    }
+    let state:(i64,i64,i64,i64,String,String)=conn.query_row("SELECT native_dirty,native_local_version,native_deletion_version,native_deletion_edited_ms,native_deletion_source,native_deletion_event_id FROM sync_entries WHERE id=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).unwrap();
+    assert_eq!(
+        state,
+        (4, 4, 2, 123, "device".into(), "delete-event".into())
+    );
+    let revision: String = conn
+        .query_row(
+            "SELECT record_revision FROM sync_records WHERE owner_kind='pending' AND entry_id=1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(revision, "incoming-revision");
+    let reset: (String, String) = conn
+        .query_row(
+            "SELECT token,last_error FROM sync_reset_state WHERE id=1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(reset, ("pending-reset".into(), "retry cleanup".into()));
+    assert!(!conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM settings WHERE key='sync_reset_pending')",
+            [],
+            |r| r.get::<_, bool>(0)
+        )
+        .unwrap());
+    assert_eq!(count(&conn, "sync_tasks"), 1);
+    assert_eq!(
+        conn.query_row("SELECT applied_token FROM sync_native_progress", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap(),
+        "old-applied"
+    );
 }

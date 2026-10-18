@@ -117,14 +117,6 @@ impl ChangeCategory {
             Self::Deletion => "native_acked_deletion_version",
         }
     }
-
-    fn event_column(self) -> &'static str {
-        match self {
-            Self::Metadata => "native_metadata_event",
-            Self::Content => "native_content_event",
-            Self::Deletion => "native_deletion_event",
-        }
-    }
 }
 
 /// A real user edit, as the service records it.
@@ -446,18 +438,18 @@ fn mark(
                         WHEN native_dirty=4 THEN 4
                         WHEN native_photo_id IS NULL THEN 1 ELSE 2 END,
                     native_local_version = native_local_version + 1,
-                    native_local_digest = NULL,
+                    native_digest_entry_id=NULL,native_digest_version=NULL,native_digest_sha256=NULL,native_digest_size=NULL,
                     {version} = {version} + 1,
-                    {event} = ?3,
+                    native_{event}_edited_ms=?3,native_{event}_source=?4,native_{event}_event_id=?5,
                     updated_at = unixepoch()
               WHERE id = ?1",
             version = category.version_column(),
-            event = category.event_column()
+            event = match category {ChangeCategory::Metadata=>"metadata",ChangeCategory::Content=>"content",ChangeCategory::Deletion=>"deletion"}
         ),
         params![
             entry_id,
             bit,
-            serde_json::to_string(stamp).map_err(json_error)?
+            stamp.edited_at_ms,stamp.source,stamp.event_id
         ],
     )?;
     let dirty: i64 = tx.query_row(
@@ -482,7 +474,6 @@ fn read_entries(
                 native_photo_id, native_master_id, native_asset_revision,
                 native_master_revision, native_content_generation,
                 native_metadata_version, native_content_version, native_deletion_version,
-                native_metadata_event, native_content_event, native_deletion_event,
                 native_acked_metadata_version,native_acked_content_version,native_acked_deletion_version
          FROM sync_entries
          WHERE job_id = ?1 AND native_dirty <> 0
@@ -503,18 +494,21 @@ fn read_entries(
             row.get::<_, i64>(10)?,
             row.get::<_, i64>(11)?,
             row.get::<_, i64>(12)?,
-            row.get::<_, Option<String>>(13)?,
-            row.get::<_, Option<String>>(14)?,
-            row.get::<_, Option<String>>(15)?,
-            row.get::<_, i64>(16)?,
-            row.get::<_, i64>(17)?,
-            row.get::<_, i64>(18)?,
+            row.get::<_, i64>(13)?,
+            row.get::<_, i64>(14)?,
+            row.get::<_, i64>(15)?,
         ))
     })?;
     let mut entries = Vec::new();
     for row in rows {
         let r = row?;
         let _ = generation;
+        let events = super::records::read_events(conn, r.0)?;
+        let stamp = |e: super::super::native::receive::EditEvent| EditEventStamp {
+            edited_at_ms: e.edited_at_ms,
+            source: e.source,
+            event_id: e.event_id,
+        };
         entries.push(DirtyEntry {
             entry_id: r.0,
             job_id: r.1,
@@ -529,26 +523,15 @@ fn read_entries(
             metadata_version: r.10,
             content_version: r.11,
             deletion_version: r.12,
-            metadata_event: parse_event(r.13)?,
-            content_event: parse_event(r.14)?,
-            deletion_event: parse_event(r.15)?,
-            acked_metadata_version: r.16,
-            acked_content_version: r.17,
-            acked_deletion_version: r.18,
+            metadata_event: events.metadata.map(stamp),
+            content_event: events.content.map(stamp),
+            deletion_event: events.deletion.map(stamp),
+            acked_metadata_version: r.13,
+            acked_content_version: r.14,
+            acked_deletion_version: r.15,
         });
     }
     Ok(entries)
-}
-
-fn parse_event(value: Option<String>) -> Result<Option<EditEventStamp>> {
-    match value {
-        Some(value) => serde_json::from_str(&value).map(Some).map_err(json_error),
-        None => Ok(None),
-    }
-}
-
-fn json_error(error: impl std::fmt::Display) -> AppError {
-    super::configuration::json_error(error)
 }
 
 fn media_path(tx: &rusqlite::Transaction<'_>, media_id: i64) -> Result<String> {

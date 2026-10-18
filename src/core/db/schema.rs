@@ -11,10 +11,14 @@ use super::{AppError, Result, SCHEMA_SQL, SCHEMA_VERSION};
 const SYNC_HISTORY_TABLES: &[&str] = &[
     "sync_conflicts",
     "sync_tasks",
+    "sync_task_resources",
     "sync_publications",
     "sync_native_resources",
     "sync_native_progress",
     "sync_entries",
+    "sync_record_fields",
+    "sync_records",
+    "sync_bootstrap_types",
 ];
 
 #[derive(Debug, PartialEq, Eq)]
@@ -100,6 +104,25 @@ pub(super) fn initialize(conn: &mut Connection) -> Result<()> {
 
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let tables = table_names(&tx)?;
+    let legacy_state = tables
+        .iter()
+        .map(|table| {
+            let cols = columns(&tx, table)?;
+            Ok(cols.iter().any(|c| {
+                crate::core::sync::store::state::legacy_columns(table).contains(&c.name.as_str())
+            }))
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .any(|legacy| legacy);
+    if legacy_state {
+        let definitions = SCHEMA_SQL
+            .split("-- Typed native record fragments")
+            .nth(1)
+            .and_then(|s| s.split_once('\n').map(|(_, sql)| sql))
+            .ok_or_else(|| AppError::Backend("missing typed sync schema".into()))?;
+        tx.execute_batch(definitions)?;
+    }
     let mut mismatches = Vec::new();
     for table in &tables {
         let Some(wanted) = expected.get(table) else {
@@ -112,7 +135,12 @@ pub(super) fn initialize(conn: &mut Connection) -> Result<()> {
             .iter()
             .filter(|c| !actual.iter().any(|a| a.name == c.name))
             .collect::<Vec<_>>();
-        let compatible = actual.iter().all(|a| wanted.iter().any(|w| w == a));
+        let compatible = actual
+            .iter()
+            .filter(|a| {
+                !crate::core::sync::store::state::legacy_columns(table).contains(&a.name.as_str())
+            })
+            .all(|a| wanted.iter().any(|w| w == a));
         if compatible
             && !additions.is_empty()
             && additions
@@ -121,7 +149,7 @@ pub(super) fn initialize(conn: &mut Connection) -> Result<()> {
         {
             for column in additions {
                 let declaration = format!(
-                    "{} {}{}{}",
+                    "{} {}{}{}{}",
                     quote(&column.name),
                     column.kind,
                     if column.not_null { " NOT NULL" } else { "" },
@@ -129,15 +157,21 @@ pub(super) fn initialize(conn: &mut Connection) -> Result<()> {
                         .default
                         .as_ref()
                         .map(|v| format!(" DEFAULT {v}"))
-                        .unwrap_or_default()
+                        .unwrap_or_default(),
+                    if table == "sync_connections" && column.name == "native_account_id" {
+                        " REFERENCES sync_accounts(id) ON DELETE SET NULL"
+                    } else {
+                        ""
+                    }
                 );
                 tx.execute(
                     &format!("ALTER TABLE {} ADD COLUMN {declaration}", quote(table)),
                     [],
                 )?;
             }
-            actual = columns(&tx, table)?;
         }
+        crate::core::sync::store::state::migrate_legacy_table(&tx, table)?;
+        actual = columns(&tx, table)?;
         if &actual != wanted {
             let missing: Vec<_> = wanted
                 .iter()
@@ -183,6 +217,7 @@ pub(super) fn initialize(conn: &mut Connection) -> Result<()> {
 
     // Missing tables/indexes can be created normally; they are not mismatches.
     tx.execute_batch(SCHEMA_SQL)?;
+    crate::core::sync::store::records::migrate_legacy(&tx)?;
     // Replaced by canonical photo metadata and per-photo incomplete fragments.
     // Bootstrap once into the new representation; preserve every dirty/version,
     // confirmed identity, issued operation and owned publication. Old metadata
@@ -193,9 +228,10 @@ pub(super) fn initialize(conn: &mut Connection) -> Result<()> {
             "sync_native_inbox" | "sync_native_records" | "sync_inventory"
         )
     }) {
-        tx.execute("UPDATE sync_native_progress SET snapshot_token=NULL,bootstrap_state=NULL,ingest_token=NULL,target_token=NULL,applied_token=NULL,discovery_token=NULL,discovery_complete=0",[])?;
+        tx.execute("UPDATE sync_native_progress SET snapshot_token=NULL,bootstrap_started=0,ingest_token=NULL,target_token=NULL,applied_token=NULL,discovery_token=NULL,discovery_complete=0",[])?;
+        tx.execute("DELETE FROM sync_records WHERE owner_kind='pending'", [])?;
         tx.execute(
-            "UPDATE sync_entries SET native_pending_master=NULL,native_pending_asset=NULL",
+            "UPDATE sync_entries SET native_has_pending_master=0,native_has_pending_asset=0",
             [],
         )?;
     }
@@ -213,6 +249,16 @@ pub(super) fn initialize(conn: &mut Connection) -> Result<()> {
             ));
         }
     }
+    crate::core::sync::store::state::migrate_account_selection(&tx)?;
+    crate::core::sync::store::state::migrate_reset_intent(&tx)?;
+    if legacy_state && tx.prepare("PRAGMA foreign_key_check")?.exists([])? {
+        return Err(AppError::Backend("relational synchronization conversion left dangling references; all changes were rolled back".into()));
+    }
+
+    // Availability fields may have been added with local-only defaults while
+    // confirmed identities survived. Recover them on every open, including
+    // databases already opened once by a build that left those defaults behind.
+    crate::core::sync::store::accounts::refresh_media_locations_in(&tx)?;
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;
     if let Some(table) = mismatches.first() {

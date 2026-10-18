@@ -21,23 +21,13 @@ pub enum JobEdit {
     Delete,
 }
 
-/// Shared with the parent module's native pin writes, which also round-trip
-/// validated JSON documents through SQLite.
+/// Protocol/legacy decoding errors. Active SQLite state is relational.
 pub(super) fn json_error(error: impl std::fmt::Display) -> AppError {
     AppError::Backend(format!("invalid synchronization JSON document: {error}"))
 }
 
 fn read(conn: &rusqlite::Connection, id: i64) -> Result<Option<PendingChange>> {
-    let value: Option<String> = conn
-        .query_row(
-            "SELECT payload FROM sync_job_changes WHERE job_id = ?1",
-            [id],
-            |r| r.get(0),
-        )
-        .optional()?;
-    value
-        .map(|value| serde_json::from_str(&value).map_err(json_error))
-        .transpose()
+    super::state::read_change(conn, id)
 }
 
 impl SyncStore {
@@ -151,8 +141,7 @@ pub(super) fn queue(pool: &DbPool, id: i64, edit: JobEdit) -> Result<SyncWriteRe
         JobEdit::Delete => pending.delete = true,
     }
     pending.revision = pending.revision.max(generation) + 1;
-    let payload = serde_json::to_string(&pending).map_err(json_error)?;
-    tx.execute("INSERT INTO sync_job_changes(job_id,payload) VALUES(?1,?2) ON CONFLICT(job_id) DO UPDATE SET payload=excluded.payload", params![id,payload])?;
+    super::state::write_change(&tx, id, &pending)?;
     tx.execute("UPDATE sync_jobs SET last_error=NULL WHERE id=?1", [id])?;
     tx.commit()?;
     Ok(SyncWriteResult::Changed(true))

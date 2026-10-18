@@ -25,6 +25,16 @@ fn permanent_deletion_survives_failure_and_reopen_until_cloud_confirmation() {
         };
         let database = root.path().join("library.db");
         let pool = db::init_pool(&database).unwrap();
+        assert!(pool
+            .get()
+            .unwrap()
+            .prepare("SELECT native_deletion_edited_ms,native_deletion_event_id FROM sync_entries")
+            .is_ok());
+        assert!(pool
+            .get()
+            .unwrap()
+            .prepare("SELECT native_deletion_event FROM sync_entries")
+            .is_err());
         let (sender, _events) = DomainEventSender::new();
         let actor = start_db_actor(pool.clone(), sender);
         let key = server.api_key.clone();

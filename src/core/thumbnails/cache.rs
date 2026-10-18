@@ -121,7 +121,7 @@ pub(in crate::core::thumbnails) fn cache_stem_for(
 
 /// Cache files can be evicted independently of SQLite. Reconcile only cache
 /// bookkeeping on the background side; sync never decodes originals itself.
-pub(super) fn recover_missing_marks(loader: &super::ThumbnailLoader) {
+pub(super) fn recover_cache_marks(loader: &super::ThumbnailLoader) {
     let pool = loader.pool.clone();
     let cache_dir = loader.cache_dir.clone();
     let actor = loader.db_actor.lock().ok().and_then(|slot| slot.clone());
@@ -141,42 +141,60 @@ pub(super) fn recover_missing_marks(loader: &super::ThumbnailLoader) {
                 }
             };
             offset += page.len() as u32;
-            let missing = page
-                .iter()
+            let mut present = Vec::new();
+            let mut missing = Vec::new();
+            for item in page
+                .into_iter()
                 .filter(|item| item.storage_location.has_local_original())
-                .filter(|item| {
-                    let mtime = Some(std::time::SystemTime::from(item.file_mtime));
-                    [
-                        ThumbnailSize::Large,
-                        ThumbnailSize::Medium,
-                        ThumbnailSize::Small,
-                    ]
-                    .iter()
-                    .all(|size| {
-                        matches!(
-                            existing_cache_path(&cache_dir, &item.uri, *size, mtime),
-                            Ok(None)
-                        )
-                    })
-                })
-                .map(|item| item.id)
-                .collect::<Vec<_>>();
-            if missing.is_empty() {
-                continue;
+            {
+                let mtime = SystemTime::from(item.file_mtime);
+                // Do not restore a cache for an external edit the scanner has
+                // not observed yet. The actor also checks the captured DB row.
+                let unchanged = std::fs::metadata(&item.path).is_ok_and(|meta| {
+                    meta.is_file()
+                        && meta.len() == item.file_size
+                        && meta.modified().is_ok_and(|modified| modified == mtime)
+                });
+                if !unchanged {
+                    continue;
+                }
+                let caches = [
+                    ThumbnailSize::Large,
+                    ThumbnailSize::Medium,
+                    ThumbnailSize::Small,
+                ]
+                .map(|size| existing_cache_path(&cache_dir, &item.uri, size, Some(mtime)));
+                if caches.iter().any(|cache| matches!(cache, Ok(Some(_)))) {
+                    if !item.thumbnail_ready {
+                        present.push(item);
+                    }
+                } else if caches.iter().all(|cache| matches!(cache, Ok(None))) {
+                    missing.push(item);
+                }
             }
-            let result = match &actor {
-                Some(actor) => actor
-                    .execute_blocking(crate::core::db_actor::DbCommand::InvalidateThumbnailMarks {
-                        ids: missing
-                            .into_iter()
-                            .map(crate::core::identity::MediaId::from)
-                            .collect(),
-                    })
-                    .map(|_| ()),
-                None => crate::core::db::invalidate_thumbnail_marks(&pool, &missing),
-            };
-            if let Err(error) = result {
-                warn!("thumbnail cache bookkeeping recovery failed: {error}");
+            let mut failed = false;
+            for (items, ready) in [(present, true), (missing, false)] {
+                if items.is_empty() {
+                    continue;
+                }
+                let result = match &actor {
+                    Some(actor) => actor
+                        .execute_blocking(
+                            crate::core::db_actor::DbCommand::ReconcileThumbnailMarks {
+                                items,
+                                ready,
+                            },
+                        )
+                        .map(|_| ()),
+                    None => crate::core::db::reconcile_thumbnail_marks(&pool, &items, ready),
+                };
+                if let Err(error) = result {
+                    warn!("thumbnail cache bookkeeping recovery failed: {error}");
+                    failed = true;
+                    break;
+                }
+            }
+            if failed {
                 break;
             }
             queue.1.notify_all();

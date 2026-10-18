@@ -38,7 +38,7 @@ const MIN_THUMBNAIL_EDGE: u32 = 64;
 
 /// A SHA-256 in both of the encodings the wire uses.
 ///
-/// Serialized into `sync_entries.native_local_digest` so a local file is read
+/// Stored as typed digest/version columns on `sync_entries` so a local file is read
 /// once and remembered, rather than re-hashed on every receive cycle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentDigest {

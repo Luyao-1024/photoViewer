@@ -267,3 +267,55 @@ fn assert_same_device(a: &Path, b: &Path, label: &str) {
 fn set_env(key: &str, value: PathBuf) {
     std::env::set_var(key, value);
 }
+
+/// Apply one already-fetched native bootstrap page through the production
+/// receive path. Used by isolated tests and read-only-service diagnostics.
+pub async fn apply_native_sync_page(
+    service: &crate::core::sync::SyncService,
+    job_id: i64,
+    record_type: &str,
+    page: &crate::core::sync::native::receive::QueryResponse,
+    record_count: usize,
+) -> crate::core::error::Result<(usize, u64, u64, u64)> {
+    let job = service
+        .store()
+        .get_job(job_id)?
+        .ok_or_else(|| crate::core::error::AppError::Backend("job removed".into()))?;
+    if !service.store().job_is_selected(job_id)? {
+        return Err(crate::core::error::AppError::Backend(
+            "account is inactive".into(),
+        ));
+    }
+    let zone = job
+        .native_zone
+        .ok_or_else(|| crate::core::error::AppError::Backend("job has no zone".into()))?;
+    let mut report = crate::core::sync::service::receive::ReceiveReport {
+        job_id,
+        ..Default::default()
+    };
+    let timing = service
+        .apply_native_bootstrap_page(
+            job_id,
+            &zone,
+            record_type,
+            &page.records,
+            &page.sync_token,
+            &mut report,
+        )
+        .await
+        .map_err(|e| crate::core::error::AppError::Backend(e.to_string()))?;
+    let started = std::time::Instant::now();
+    service.store().save_bootstrap_page(
+        job_id,
+        record_type,
+        page.continuation_marker.clone(),
+        record_count,
+        &page.sync_token,
+    )?;
+    Ok((
+        timing.saved,
+        timing.persist_ms,
+        timing.apply_ms,
+        started.elapsed().as_millis() as u64,
+    ))
+}

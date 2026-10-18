@@ -54,7 +54,7 @@ resets an active performance trace. New events keep writing to a visible file.
 No media rows, account records or keyring credentials participate in log cleanup.
 
 Cloud-sync batch activity uses target `sync` at `INFO`, including cycle results,
-persisted receive pages, verified resource downloads and admitted photo pairs.
+persisted receive pages, verified resource downloads and admitted photo pairs. Full receive-page logs include `http_ms`, `persist_ms`, `apply_ms`, `checkpoint_ms` and overall `elapsed_ms`; the latter measures the whole page, not network time alone.
 Failures use `WARN`. Default `info` logging retains this activity in both the
 session log and stderr; `RUST_LOG=sync=info` selects it independently. See the
 [sync logging contract](sync.md#sync-activity-logs) for counters and status

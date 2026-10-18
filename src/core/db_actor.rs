@@ -70,6 +70,10 @@ pub enum DbCommand {
     InvalidateThumbnailMarks {
         ids: Vec<MediaId>,
     },
+    ReconcileThumbnailMarks {
+        items: Vec<MediaItem>,
+        ready: bool,
+    },
     MarkTrashed {
         ids: Vec<MediaId>,
     },
@@ -132,9 +136,9 @@ impl DbCommand {
             | Self::ResetLibraryDatabase
             | Self::ResetAccountData
             | Self::DeleteMediaRows { .. } => DbWritePriority::UserInteractive,
-            Self::MarkThumbnailsGenerated { .. } | Self::InvalidateThumbnailMarks { .. } => {
-                DbWritePriority::Thumbnail
-            }
+            Self::MarkThumbnailsGenerated { .. }
+            | Self::InvalidateThumbnailMarks { .. }
+            | Self::ReconcileThumbnailMarks { .. } => DbWritePriority::Thumbnail,
             Self::MarkTrashed { .. }
             | Self::RestoreTrashed { .. }
             | Self::DeleteTrashedRows { .. } => DbWritePriority::Trash,
@@ -477,7 +481,8 @@ fn db_command_item_count(command: &DbCommand) -> usize {
         | DbCommand::RestoreTrashed { ids }
         | DbCommand::DeleteTrashedRows { ids }
         | DbCommand::RollbackTrashed { ids } => ids.len(),
-        DbCommand::CommitMovedToTrash { items } => items.len(),
+        DbCommand::CommitMovedToTrash { items }
+        | DbCommand::ReconcileThumbnailMarks { items, .. } => items.len(),
         _ => 0,
     }
 }
@@ -501,6 +506,7 @@ fn db_command_name(command: &DbCommand) -> &'static str {
         DbCommand::DeleteMediaRows { .. } => "delete_media_rows",
         DbCommand::MarkThumbnailsGenerated { .. } => "mark_thumbnails_generated",
         DbCommand::InvalidateThumbnailMarks { .. } => "invalidate_thumbnail_marks",
+        DbCommand::ReconcileThumbnailMarks { .. } => "reconcile_thumbnail_marks",
         DbCommand::MarkTrashed { .. } => "mark_trashed",
         DbCommand::RestoreTrashed { .. } => "restore_trashed",
         DbCommand::DeleteTrashedRows { .. } => "delete_trashed_rows",
@@ -752,6 +758,10 @@ fn execute_command(
                 pool,
                 &ids.into_iter().map(MediaId::get).collect::<Vec<_>>(),
             )?;
+            Ok(DbCommandResult::None)
+        }
+        DbCommand::ReconcileThumbnailMarks { items, ready } => {
+            db::reconcile_thumbnail_marks(pool, &items, ready)?;
             Ok(DbCommandResult::None)
         }
         DbCommand::MarkThumbnailsGenerated { ids } => {

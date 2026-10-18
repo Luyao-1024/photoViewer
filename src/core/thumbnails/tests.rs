@@ -733,6 +733,7 @@ fn disk_cache_hit_skips_thumbnail_mark_callback() {
         1,
         "exactly one mark (cold only); disk-cache hit must not re-mark"
     );
+    assert!(db::get_media_item(&pool, id).unwrap().thumbnail_ready);
     // loader drop → shutdown() → detached worker exits
 }
 
@@ -1622,4 +1623,133 @@ fn upload_converts_only_the_cached_webp_and_obeys_server_limits() {
     let thumbnail = image::load_from_memory(&bytes).unwrap();
     assert_eq!((thumbnail.width(), thumbnail.height()), (64, 32));
     assert!(cached_upload_thumbnail(&cache, &source, 64, 16).is_err());
+}
+
+#[test]
+fn cache_recovery_restores_existing_thumbnails_without_decoding_originals() {
+    use std::time::Duration;
+    crate::testing::Sandbox::install();
+    let root = tempfile::tempdir().unwrap();
+    let pool = db::init_pool(&root.path().join("photos.db")).unwrap();
+    let cache_dir = root.path().join("cache");
+    let (events, _receiver) = crate::core::events::DomainEventSender::new();
+    let actor = crate::core::db_actor::start_db_actor(pool.clone(), events);
+    let mut ids = Vec::new();
+    for (name, cached, marked) in [
+        ("cached", true, false),
+        ("missing", false, true),
+        ("already-marked", true, true),
+    ] {
+        let source = root.path().join(format!("{name}.mp4"));
+        std::fs::write(&source, b"not a decodable original").unwrap();
+        let item = crate::core::backend::local::LocalBackend::new_item_from_path(&source)
+            .unwrap()
+            .unwrap();
+        let media = db::upsert_media_items_batch(&pool, &[item])
+            .unwrap()
+            .remove(0);
+        if cached {
+            let stem = cache_stem_for(
+                &cache_dir,
+                &media.uri,
+                ThumbnailSize::Small,
+                Some(media.file_mtime.into()),
+            )
+            .unwrap();
+            std::fs::create_dir_all(stem.parent().unwrap()).unwrap();
+            image::RgbImage::from_pixel(4, 4, image::Rgb([30, 70, 120]))
+                .save(stem.with_extension("jpg"))
+                .unwrap();
+        }
+        if marked {
+            db::mark_thumbnails_generated(&pool, &[media.id]).unwrap();
+        }
+        ids.push(media.id);
+    }
+    let loader = ThumbnailLoader::new(pool.clone(), cache_dir);
+    loader.set_db_actor(actor);
+    loader.start_background_prewarm();
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let ready: Vec<_> = ids
+            .iter()
+            .map(|id| db::get_media_item(&pool, *id).unwrap().thumbnail_ready)
+            .collect();
+        if ready == [true, false, true] {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "cache recovery left flags {ready:?}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn cache_reconciliation_ignores_edited_renamed_and_cloud_only_observations() {
+    use crate::core::db_actor::DbCommand;
+    use crate::core::identity::MediaId;
+    crate::testing::Sandbox::install();
+    let root = tempfile::tempdir().unwrap();
+    let pool = db::init_pool(&root.path().join("photos.db")).unwrap();
+    let (events, _receiver) = crate::core::events::DomainEventSender::new();
+    let actor = crate::core::db_actor::start_db_actor(pool.clone(), events);
+    let mut observed = Vec::new();
+    for name in ["edited", "renamed", "cloud-only"] {
+        let source = root.path().join(format!("{name}.mp4"));
+        std::fs::write(&source, b"old original").unwrap();
+        let item = crate::core::backend::local::LocalBackend::new_item_from_path(&source)
+            .unwrap()
+            .unwrap();
+        observed.push(
+            db::upsert_media_items_batch(&pool, &[item])
+                .unwrap()
+                .remove(0),
+        );
+    }
+    // The cache was probed before these ordinary library mutations.
+    std::fs::write(
+        &observed[0].path,
+        b"a later original with different bytes and length",
+    )
+    .unwrap();
+    let edited = crate::core::backend::local::LocalBackend::new_item_from_path(&observed[0].path)
+        .unwrap()
+        .unwrap();
+    actor
+        .execute_blocking(DbCommand::UpsertMediaBatch {
+            source: crate::core::events::ChangeSource::FilesystemWatcher,
+            items: vec![edited],
+        })
+        .unwrap();
+    let destination = root.path().join("new-name.mp4");
+    std::fs::rename(&observed[1].path, &destination).unwrap();
+    actor
+        .execute_blocking(DbCommand::UpdateMediaLocation {
+            id: MediaId::from(observed[1].id),
+            path: destination,
+            folder_path: root.path().to_owned(),
+        })
+        .unwrap();
+    pool.get()
+        .unwrap()
+        .execute(
+            "UPDATE media_items SET storage_location=2 WHERE id=?1",
+            [observed[2].id],
+        )
+        .unwrap();
+    actor
+        .execute_blocking(DbCommand::ReconcileThumbnailMarks {
+            items: observed.clone(),
+            ready: true,
+        })
+        .unwrap();
+    for item in observed {
+        assert!(
+            !db::get_media_item(&pool, item.id).unwrap().thumbnail_ready,
+            "stale observation marked {}",
+            item.id
+        );
+    }
 }

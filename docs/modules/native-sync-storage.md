@@ -4,120 +4,33 @@
 
 ## Ownership And Initialization
 
-Photo metadata has one database representation: `media_items` linked to its existing
-`sync_entries` record. `storage_location` is 1=local, 2=cloud with no downloaded
-original, 3=both. `thumbnail_ready` means generated for a local original or
-downloaded into the normal cache for a cloud-only record. Metadata-only rows are
-admitted immediately. `visible_media` exposes local/both rows and the current
-account's cloud rows whose thumbnails are ready. The original download changes
-2→3 only after durable publication; thumbnail availability is independent.
+Cloud-photo and sync state uses ordinary SQLite columns and normalized relations. No sync table persists JSON documents or opaque serialized BLOBs. JSON is used at the HTTP and in-memory DTO boundary. The [relational storage guide](native-sync-relational.md) owns the field/index rules and the 100-record, one-second batch target.
 
-On the first startup that removes obsolete mirror tables, only receive cursors
-and transient pair fragments are reset so a fresh snapshot can admit canonical
-media metadata. Media, dirty=4 rows, confirmed cloud IDs, versions, issued requests
-and publication recovery are preserved. Later startups keep their receive cursors.
+Development `user_version` remains 1. Before generic schema-drift recovery, a single transaction converts recognized legacy document columns, preserves row IDs, account selection, dirty/category versions, receive tokens, resource state, issued UUIDs and publication ownership, then removes the old columns. Issued request bodies and preparation must reconstruct exactly; unsupported legacy state aborts and rolls back the conversion. Conversion is not a reason to clear history or upload photos again. `PRAGMA foreign_key_check` validates the converted graph before commit.
 
-There is no persisted full remote inventory, inbox, projection or sync_inventory.
-Unfinished wire-pair fields use nullable `native_pending_master/native_pending_asset`
-on their existing entry and are removed after applying the pair. Watermarks and
-bootstrap markers remain on the job's receive progress. Download/publication
-obligations remain per photo; they do not describe a separate full library.
-
-
-All writes go through the existing DbActor. Native protocol/network code owns
-no SQL, GTK widgets or direct media-row admission. Extend SyncStore/DbCommand
-with typed native operations; background scans, editor/favorite changes, trash,
-recovery and callbacks use the same transaction owner.
-
-Initialization compares existing column layouts against an in-memory database
-created from `schema.sql`. Purely additive nullable/defaulted fields are adopted
-without rebuilding tables or deleting pending dirty records. Other incompatible
-layouts follow the single-table recovery rule. It then executes the current schema and writes
-`PRAGMA user_version=1` in one transaction. Previous development version numbers
-are not an admission gate; there are no column migrations. Recovery drops and
-recreates at most one incompatible table; multiple incompatible tables or
-non-history dependent rows cause an error without changing data. It never
-removes the database file. See [storage recovery](storage.md#database).
-
-A table rebuild invalidates the whole sync history: initialization deletes rows
-from entries, tasks, conflicts, native progress/resources
-and publications, and resets job cycle/completion/error fields. These other
-tables are not rebuilt. Compatible account/credential references, selected
-account, job configuration, explicit upload scope, pause state, pending edits
-and library data survive. With no snapshot/bootstrap/ingest/applied/target state,
-the next eligible cycle performs full receive discovery and local enrollment.
-Recovery rollback restores both the original table and all previous sync rows.
-Provider kind is native-only, and a connection is created by an explicit
-completed probe.
-
-## Planned Fields On Existing Rows
-
-| Owner | Added native data / invariant |
+| Owner | Stored state |
 |---|---|
-| sync_connections | provider_kind=native_syncserver (CHECK-enforced), credential_ref for Bearer, pinned capability document; no plaintext key |
-| sync_jobs | explicit NOT NULL zone/owner and scope metadata; config_generation still gates desired state; no path-shaped remote root exists |
-| sync_entries | native_dirty operation state and native_local_version; independent metadata/content/deletion versions and edit events |
-| sync_entries | stable photo/master IDs, both confirmed record revisions, content generation and typed field baselines |
-| sync_entries | native original/thumbnail IDs, SHA-256/size baselines, acknowledged category versions and desired metadata snapshot |
-| sync_tasks | issued native operation evidence: captured job/config/cycle/entry/category versions, namespace generation, exact logical body, resource-session correlation |
-| sync_conflicts | category, both event stamps/revisions and losing-copy ownership; no second dirty truth |
+| `sync_accounts` / `sync_connections` | stable account ID; endpoint, namespace, generation, authenticated user, capabilities and limits in scalar columns; credential reference only |
+| `sync_connection_zones` | accepted zones, ordered by position |
+| `settings.native_sync_account` | scalar stable account ID; removing one connection does not change the selected account |
+| `sync_entries` | photo/master IDs and revisions, dirty and local/acknowledged versions, retired/readiness flags, edit time/source/event ID columns and versioned SHA-256/size columns |
+| `sync_records` | owned pending/baseline/conflict/publication/request record headers; indexed job/record/photo/master identity plus scalar relative path and generation |
+| `sync_record_fields` | typed wire values: string/integer/real/boolean, reference identity, or asset ID/checksum/size/MIME/dimensions; no encoded value object |
+| `sync_tasks` / `sync_task_resources` | issued-operation context, captured versions, body/preparation presence, ordered request records, owned snapshots, upload sessions and typed resource descriptions |
+| `sync_native_progress` / `sync_bootstrap_types` | distinct snapshot/ingest/target/applied tokens; per-type status, continuation marker and count |
+| `sync_conflicts` | reason, recovery path and an owned structured competing photo |
+| `sync_publications` | captured configuration/local versions, structured target photo, file targets/new/backup paths and captured filesystem stamps |
+| `sync_job_changes` / `sync_job_change_albums` | accepted edit revision, desired direction, deletion and explicit album draft |
 
-Store category stamps in nullable validated JSON columns (editedAtMs/source/eventId),
-with names such as native_metadata_event/native_content_event/native_deletion_event.
-Wire `_syncserver` is assembled from them; absent old timestamps remain absent.
-Use separate nullable native_* columns rather than treating existing BLAKE3
-fingerprints or weak WebDAV revisions as SHA-256/recordChangeTag. Current
-entry_generation advances on sync observation as well as user changes, so it
-cannot replace the independent native_local_version/category counters.
+`sync_entries.id` is the stable local identity. `media_id` is a nullable presentation association. Pending record rows represent only incomplete work and are deleted after application; baseline records replace the former baseline document on the same entry. They do not introduce a second full remote inventory. Historical issued/publication evidence has its own owner and survives ordinary media association changes.
 
-Keep sync_entries.id as local identity through media-index rebuilds; nullable
-media_id is only a presentation association. Native photo/master IDs are stable
-UUIDs, not media IDs or relative paths. Add a scoped uniqueness constraint for
-native photo identity. Update paths in place; do not recreate the entry to rename
-it. For a valid path swap, change affected row paths through unoccupied internal
-placeholder values inside one DbActor transaction, then final paths; never emit
-those temporary paths, write them to disk, or commit a placeholder. A conflict
-with an unrelated occupant remains a conflict.
+## Fields And Indexes
 
-## Column Shapes And Index Keys
+Native dirty is exclusive: 0 clean, 1 new, 2 modified, 4 permanently deleted. Metadata/content/deletion retain independent local and acknowledged counters. Each event has nullable `edited_ms`, `source`, `event_id` columns; absence never becomes a fabricated time. Digest columns capture entry ID and local version as well as SHA-256 and size; a new edit invalidates the capture.
 
-The native schema uses these types/defaults; additional physical
-columns may split JSON only while preserving the same transaction contract.
+Use the partial unique `(job_id,native_photo_id)` index and `(job_id,native_master_id)` index for confirmed identity. Pending records have `(job_id,owner_kind,record_name)` and photo/master indexes. Read the pending revision first, then the confirmed scalar revision. Album/path joins use `(job_id,relative_path)` and `media_items(path)`. Per-page comparisons select only incoming paths, in bounded parameter chunks, rather than loading the whole task.
 
-| Planned columns | Shape / meaning |
-|---|---|
-| native_dirty | INTEGER NOT NULL DEFAULT 0, CHECK IN (0,1,2,4); operation states below |
-| native_upload_error | nullable TEXT; latest upload error for this cycle, cleared per job by an accepted Begin; never dirty truth |
-| native_local_version | INTEGER NOT NULL DEFAULT 0, monotonic user-change counter |
-| native_metadata_version / native_content_version / native_deletion_version | INTEGER NOT NULL DEFAULT 0; independently captured/acknowledged |
-| native_acked_metadata_version / native_acked_content_version / native_acked_deletion_version | INTEGER NOT NULL DEFAULT 0; never above their corresponding local version |
-| native_metadata_event / native_content_event / native_deletion_event | nullable validated JSON event stamps; unknown is NULL |
-| native_photo_id / native_master_id | nullable UUID TEXT, assigned together; provisional NEW IDs are distinct from confirmed cloud existence |
-| native_asset_revision / native_master_revision / native_confirmed_generation | nullable opaque TEXT; acknowledged pair/scope facts |
-| native_content_generation | nullable UUID TEXT for the confirmed combination |
-| native_desired_metadata / native_baseline_metadata | nullable validated typed-field JSON; desired user values and exact confirmed baseline have different roles |
-| native_resource_baseline | nullable validated JSON for both roles' IDs/SHA-256/sizes; never store a lease token or expiring URL as identity |
-| sync_tasks.native_capture / sync_conflicts.native_detail | nullable validated JSON for issued-operation captures or conflict candidates; preserve legacy columns/rows |
-
-Allocated NEW record IDs do not prove a create happened. Once submitted, retain
-those IDs and the stable operation intent until outcome reconciliation. Before
-any submission a verified existing cloud pair may replace provisional IDs via
-explicit adoption; after a confirmed deletion recreation always gets fresh IDs.
-
-Progress has PRIMARY KEY(job_id, zone_name, owner); namespace, generation and
-scope digest (including local placement/download scope) are explicit fields.
-Incomplete Master/Asset fields reside on their entry until the atomic pair is
-complete, with the ingest token stored after those fields. Per-photo publication
-captures hold only pending target metadata and are cleared on completion. Confirmed
-resource/metadata baselines and record revisions live on that same sync entry.
-Resource work is keyed by (job,generation,asset,role). Issued operation captures
-remain separate recovery evidence for requests whose result is unknown.
-
-Index active native entries by (job_id, native_dirty, id) for derivation and
-partial-unique (job_id, native_photo_id) when non-NULL. Index resource work by job/state, and publication intents by job/state. All actor
-commands check provider kind, scope/config and captured versions; SQL tracing
-and EXPLAIN tests cover actual statements. File/network waits never occur in
-these transactions, and no native triggers overwrite WebDAV fields.
+Resource work remains keyed by `(job,generation,asset,role)`. Publication lookups use `(job,photo,state)`; account connections use a stable account FK. Query-plan tests verify actual identity index use. File/network/hash work remains outside actor transactions. Wire omission versus explicit null and request record order are preserved for idempotent replay.
 
 ## Dirty Truth And Mutation Transactions
 
@@ -204,7 +117,7 @@ subsequent local metadata edit follows the ordinary dirty/version/event path.
 
 Digests are measured in `SyncService::measure_local_matches`, before the promotion
 transaction opens — a transaction that hashed a library would hold the single
-write lock for the length of a disk sweep. `native_local_digest` caches the
+write lock for the length of a disk sweep. The typed entry digest/version columns cache the
 result so an unchanged file is read once rather than once per cycle, and
 `mark()` clears it whenever a local edit is recorded. Every measured or cached
 result, including its persisted cache, also carries `sync_entries.id` and the
@@ -497,7 +410,7 @@ native_retired 保存在既有 sync_entries。干净的云端删除保留本地�
 
 ## 账户身份与重新认证
 
-用户信息是服务器 pinned scope 的一部分，在既有 JSON 中保存可选 authentication 字段，数据库版本仍固定为 1。重登通过 actor 命令核对旧连接整体捕获、账户 ID、namespace、generation 和 endpoint 后更新认证信息，不清 dirty 或接收位置。旧无用户身份仅可升级至同 namespace/generation 的显式数据接管者。相同 endpoint/zone 的唯一映射检查增加既有 native_tenant，其他账号保留独立任务且可复用本地根；同账号内部仍拒绝重叠。settings.native_sync_account 持久化当前账号身份，sync_connections.enabled 只启用这个账号，切换通过 actor 事务使旧 epoch 失效，并等待旧运行退出后才允许新运行。细节见[账户接入方案](native-sync-accounts.md)。
+用户信息、认证模式、服务器能力和限制保存在连接普通列中；`sync_accounts` 提供稳定账号 ID，数据库版本仍固定为 1。重登通过 actor 命令核对旧连接整体捕获、账户 ID、namespace、generation 和 endpoint 后更新认证信息，不清 dirty 或接收位置。旧无用户身份仅可升级至同 namespace/generation 的显式数据接管者。相同 endpoint/zone 的唯一映射检查增加既有 native_tenant，其他账号保留独立任务且可复用本地根；同账号内部仍拒绝重叠。settings.native_sync_account 保存稳定账号 ID，sync_connections.enabled 只启用这个账号，切换通过 actor 事务使旧 epoch 失效，并等待旧运行退出后才允许新运行。细节见[账户接入方案](native-sync-accounts.md)。
 
 A received rename can wait for a newer local content upload. Once that upload is
 confirmed, its canonical baseline still names the accepted destination. The next

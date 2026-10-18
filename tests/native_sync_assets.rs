@@ -646,6 +646,16 @@ fn two_clients_create_receive_edit_and_replace_a_complete_photo() {
         let scope = client.probe().await.unwrap();
         let (sender_a, _events_a) = DomainEventSender::new();
         let pool_a = db::init_pool(&root.path().join("a.sqlite")).unwrap();
+        assert!(pool_a
+            .get()
+            .unwrap()
+            .prepare("SELECT capture_present,capture_photo FROM sync_tasks")
+            .is_ok());
+        assert!(pool_a
+            .get()
+            .unwrap()
+            .prepare("SELECT native_capture FROM sync_tasks")
+            .is_err());
         let actor_a = start_db_actor(pool_a.clone(), sender_a);
         let key = server.api_key.clone();
         let reads = std::sync::atomic::AtomicUsize::new(0);

@@ -211,16 +211,9 @@ fn a_local_change_advances_the_local_and_category_versions_and_stamps_the_event(
     // the cloud, and there has been no cloud yet.
     assert_eq!(acked, 0);
 
-    let event: EditEventStamp = fixture
-        .pool
-        .get()
+    let event = super::super::records::read_events(&fixture.pool.get().unwrap(), entry_id)
         .unwrap()
-        .query_row(
-            "SELECT native_metadata_event FROM sync_entries WHERE id = ?1",
-            [entry_id],
-            |row| row.get::<_, String>(0),
-        )
-        .map(|value| serde_json::from_str(&value).unwrap())
+        .metadata
         .unwrap();
     assert_eq!(event.edited_at_ms, 1_700_000_000_000);
     assert_eq!(event.source, "device-a");

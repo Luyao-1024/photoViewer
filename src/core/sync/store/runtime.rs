@@ -18,7 +18,7 @@ pub struct Epoch {
     pub cycle: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Issued {
     pub id: String,
     pub job: i64,
@@ -172,29 +172,29 @@ impl SyncStore {
     }
     pub(crate) fn epoch_current(&self, epoch: &Epoch) -> Result<bool> {
         let conn = self.pool.get()?;
-        conn.query_row("SELECT EXISTS(SELECT 1 FROM sync_jobs j JOIN sync_connections c ON c.id=j.connection_id WHERE j.id=?1 AND j.config_generation=?2 AND j.native_cycle_id=?3 AND j.paused=0 AND c.enabled=1 AND NOT EXISTS(SELECT 1 FROM sync_job_changes WHERE job_id=j.id) AND NOT EXISTS(SELECT 1 FROM settings WHERE key='sync_reset_pending'))",params![epoch.job,epoch.config,epoch.cycle],|r|r.get(0)).map_err(Into::into)
+        conn.query_row("SELECT EXISTS(SELECT 1 FROM sync_jobs j JOIN sync_connections c ON c.id=j.connection_id WHERE j.id=?1 AND j.config_generation=?2 AND j.native_cycle_id=?3 AND j.paused=0 AND c.enabled=1 AND NOT EXISTS(SELECT 1 FROM sync_job_changes WHERE job_id=j.id) AND NOT EXISTS(SELECT 1 FROM sync_reset_state WHERE id=1))",params![epoch.job,epoch.config,epoch.cycle],|r|r.get(0)).map_err(Into::into)
     }
     pub(crate) fn pending_issued(&self, job: i64) -> Result<Vec<Issued>> {
         let conn = self.pool.get()?;
-        let mut stmt = conn.prepare(
-            "SELECT native_capture FROM sync_tasks WHERE job_id=?1 AND state='issued' ORDER BY id",
-        )?;
-        let rows = stmt
-            .query_map([job], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        rows.into_iter()
-            .map(|value| {
-                serde_json::from_str(&value)
-                    .map_err(|_| invalid("invalid issued operation evidence"))
+        let ids = {
+            let mut stmt=conn.prepare("SELECT operation_id FROM sync_tasks WHERE job_id=?1 AND state='issued' ORDER BY id")?;
+            let rows = stmt
+                .query_map([job], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        ids.into_iter()
+            .map(|id| {
+                super::issued::read(&conn, &id)?
+                    .ok_or_else(|| invalid("issued operation has no captured state"))
             })
             .collect()
     }
     pub(crate) fn local_metadata(&self, entry: i64) -> Result<Value> {
         let conn = self.pool.get()?;
-        let (favorite,date,path,baseline,trashed):(Option<i64>,Option<i64>,String,Option<String>,bool)=conn.query_row("SELECT m.is_favorite,m.taken_at,e.relative_path,e.native_resource_baseline,m.trashed_at IS NOT NULL FROM sync_entries e LEFT JOIN media_items m ON m.id=e.media_id WHERE e.id=?1",[entry],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)))?;
-        let baseline_ms = baseline
-            .and_then(|json| serde_json::from_str::<Value>(&json).ok())
-            .and_then(|value| value["assetDateMs"].as_i64());
+        let (favorite,date,path,trashed):(Option<i64>,Option<i64>,String,bool)=conn.query_row("SELECT m.is_favorite,m.taken_at,e.relative_path,m.trashed_at IS NOT NULL FROM sync_entries e LEFT JOIN media_items m ON m.id=e.media_id WHERE e.id=?1",[entry],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))?;
+        let baseline_ms = super::records::load_photo(&conn, "baseline", &entry.to_string())?
+            .and_then(|photo| photo.asset_date_ms);
         let date_ms = date.map(|seconds| {
             baseline_ms
                 .filter(|ms| ms.div_euclid(1000) == seconds)
@@ -235,8 +235,9 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
                     "DELETE FROM sync_entries WHERE job_id=?1 AND native_dirty=4",
                     [job],
                 )?;
-                tx.execute("UPDATE sync_entries SET native_pending_master=NULL,native_pending_asset=NULL WHERE job_id=?1",[job])?;
-                tx.execute("UPDATE sync_native_progress SET snapshot_token=NULL,bootstrap_state=NULL,ingest_token=NULL,target_token=NULL,applied_token=NULL,discovery_token=NULL,discovery_complete=0 WHERE job_id=?1",[job])?;
+                super::records::clear_job_pending(&tx, job)?;
+                super::state::clear_bootstrap(&tx, job)?;
+                tx.execute("UPDATE sync_native_progress SET snapshot_token=NULL,bootstrap_started=0,ingest_token=NULL,target_token=NULL,applied_token=NULL,discovery_token=NULL,discovery_complete=0 WHERE job_id=?1",[job])?;
             }
         }
         Command::ConfirmAbsentDeletion {
@@ -259,7 +260,7 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
         Command::ClearAccount => {
             tx.execute("UPDATE sync_connections SET enabled=0", [])?;
             super::accounts::refresh_media_locations_in(&tx)?;
-            tx.execute("INSERT INTO settings(key,value) VALUES('native_sync_account','null') ON CONFLICT(key) DO UPDATE SET value=excluded.value", [])?;
+            tx.execute("INSERT INTO settings(key,value) VALUES('native_sync_account','0') ON CONFLICT(key) DO UPDATE SET value=excluded.value", [])?;
         }
         Command::SelectAccount { job } => super::accounts::select_in(&tx, job)?,
         Command::AcceptAuthentication {
@@ -267,13 +268,8 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
             expected,
             updated,
         } => {
-            let before: String = tx.query_row(
-                "SELECT native_pinned_scope FROM sync_connections WHERE id=?1",
-                [connection],
-                |r| r.get(0),
-            )?;
-            let current: super::super::NativePinnedScope = serde_json::from_str(&before)
-                .map_err(|_| invalid("invalid connection identity"))?;
+            let current = super::state::read_scope(&tx, connection)?
+                .ok_or_else(|| invalid("connection has no pinned identity"))?;
             let before_user = current
                 .authentication
                 .as_ref()
@@ -292,7 +288,7 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
             {
                 return Err(invalid("connection changed during login"));
             }
-            tx.execute("UPDATE sync_connections SET native_pinned_scope=?2,native_probed_at=unixepoch(),native_probe_error=NULL WHERE id=?1",params![connection,serde_json::to_string(&updated).map_err(|_|invalid("invalid connection identity"))?])?;
+            super::state::write_scope(&tx, connection, &updated)?;
         }
         Command::RetireIssued {
             epoch,
@@ -304,9 +300,10 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
             if !rejected && (!operation.body.is_null() || operation.config == epoch.config) {
                 return Err(invalid("an uncertain issued mutation cannot be discarded"));
             }
-            let encoded = serde_json::to_string(&operation)
-                .map_err(|_| invalid("invalid issued evidence"))?;
-            let changed=tx.execute("UPDATE sync_tasks SET state='failed',last_error=?4 WHERE operation_id=?1 AND job_id=?2 AND state='issued' AND native_capture=?3",params![operation.id,epoch.job,encoded,if rejected {reason.as_str()} else {"configuration superseded preparation before mutation"}])?;
+            if super::issued::read(&tx, &operation.id)?.as_ref() != Some(&operation) {
+                return Err(invalid("issued evidence changed before retirement"));
+            }
+            let changed=tx.execute("UPDATE sync_tasks SET state='failed',last_error=?3 WHERE operation_id=?1 AND job_id=?2 AND state='issued'",params![operation.id,epoch.job,if rejected{reason.as_str()}else{"configuration superseded preparation before mutation"}])?;
             if changed != 1 {
                 return Err(invalid("issued evidence changed before retirement"));
             }
@@ -369,14 +366,15 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
                     "an issued operation still owns the local collision",
                 ));
             }
-            tx.execute("INSERT INTO sync_publications(publication_id,job_id,entry_id,photo_id,state,captured_versions,role_state) VALUES(?1,?2,?3,?4,'publishing',?5,?6)",params![id,capture["job"].as_i64(),entry,capture["photo"].as_str(),capture.to_string(),details.to_string()])?;
+            tx.execute("INSERT INTO sync_publications(publication_id,job_id,entry_id,photo_id,state) VALUES(?1,?2,?3,?4,'publishing')",params![id,capture["job"].as_i64(),entry,capture["photo"].as_str()])?;
+            super::recovery::set_capture(&tx, &id, &capture)?;
+            super::recovery::set_details(&tx, &id, Some(&details))?;
         }
         Command::FinishCollision { id } => {
-            let (capture,details):(String,String)=tx.query_row("SELECT captured_versions,role_state FROM sync_publications WHERE publication_id=?1 AND state='publishing'",[&id],|r|Ok((r.get(0)?,r.get(1)?)))?;
-            let capture: Value =
-                serde_json::from_str(&capture).map_err(|_| invalid("invalid collision capture"))?;
-            let details: Value =
-                serde_json::from_str(&details).map_err(|_| invalid("invalid collision details"))?;
+            let capture = super::recovery::capture(&tx, &id)?
+                .ok_or_else(|| invalid("missing collision capture"))?;
+            let details = super::recovery::details(&tx, &id)?
+                .ok_or_else(|| invalid("missing collision details"))?;
             check_publication(&tx, &capture)?;
             let entry = capture["entry"]
                 .as_i64()
@@ -411,14 +409,22 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
             };
             for (entry, root) in entries {
                 if let Ok(relative) = path.strip_prefix(root) {
-                    tx.execute("UPDATE sync_entries SET relative_path=?2,native_local_version=native_local_version+1,native_local_digest=NULL WHERE id=?1",params![entry,relative.to_string_lossy()])?;
-                    tx.execute("UPDATE sync_conflicts SET state='resolved',resolution='local path preserved with a numeric suffix',resolved_at=unixepoch() WHERE entry_id=?1 AND state='open' AND kind='native' AND json_extract(native_detail,'$.reason') IN ('another local/cloud identity owns this path','cloud content at this path differs from the local file')",[entry])?;
+                    tx.execute("UPDATE sync_entries SET relative_path=?2,native_local_version=native_local_version+1,native_digest_entry_id=NULL,native_digest_version=NULL,native_digest_sha256=NULL,native_digest_size=NULL WHERE id=?1",params![entry,relative.to_string_lossy()])?;
+                    tx.execute("UPDATE sync_conflicts SET state='resolved',resolution='local path preserved with a numeric suffix',resolved_at=unixepoch() WHERE entry_id=?1 AND state='open' AND kind='native' AND native_reason IN ('another local/cloud identity owns this path','cloud content at this path differs from the local file')",[entry])?;
                 }
             }
-            tx.execute("UPDATE sync_publications SET state='complete',role_state=NULL WHERE publication_id=?1",[id])?;
+            tx.execute(
+                "UPDATE sync_publications SET state='complete' WHERE publication_id=?1",
+                [&id],
+            )?;
+            super::recovery::set_details(&tx, &id, None)?;
         }
         Command::AbortCollision { id } => {
-            tx.execute("UPDATE sync_publications SET state='superseded',role_state=NULL WHERE publication_id=?1",[id])?;
+            tx.execute(
+                "UPDATE sync_publications SET state='superseded' WHERE publication_id=?1",
+                [&id],
+            )?;
+            super::recovery::set_details(&tx, &id, None)?;
         }
         Command::ForgetIdentityForAdoption {
             job,
@@ -429,10 +435,11 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
             if busy {
                 return Err(invalid("an issued operation still owns the identity"));
             }
-            let changed=tx.execute("UPDATE sync_entries SET native_photo_id=NULL,native_master_id=NULL,native_resource_baseline=NULL,native_asset_revision=NULL,native_master_revision=NULL,native_content_generation=NULL,native_confirmed_generation=NULL,native_retired=0 WHERE id=?1 AND job_id=?2 AND native_local_version=?3",params![entry,job,version])?;
+            let changed=tx.execute("UPDATE sync_entries SET native_photo_id=NULL,native_master_id=NULL,native_has_baseline=0,native_asset_revision=NULL,native_master_revision=NULL,native_content_generation=NULL,native_confirmed_generation=NULL,native_retired=0 WHERE id=?1 AND job_id=?2 AND native_local_version=?3",params![entry,job,version])?;
             if changed != 1 {
                 return Err(invalid("local edit superseded identity adoption"));
             }
+            super::records::set_baseline_document(&tx, entry, None)?;
         }
         Command::Enroll { epoch } => {
             valid_epoch(&tx, &epoch)?;
@@ -477,9 +484,11 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
             if issued.job != epoch.job || issued.config != epoch.config {
                 return Err(invalid("issued operation configuration mismatch"));
             }
-            let capture = serde_json::to_string(&issued)
-                .map_err(|_| invalid("cannot encode issued operation"))?;
-            tx.execute("INSERT INTO sync_tasks(operation_id,job_id,entry_id,action,state,config_generation,entry_generation,native_capture) VALUES(?1,?2,?3,?4,'issued',?5,?6,?7) ON CONFLICT(operation_id) DO UPDATE SET native_capture=excluded.native_capture,updated_at=unixepoch() WHERE sync_tasks.state='issued' AND sync_tasks.job_id=excluded.job_id",params![issued.id,issued.job,issued.entry,issued.phase,issued.config,issued.versions[0],capture])?;
+            let changed=tx.execute("INSERT INTO sync_tasks(operation_id,job_id,entry_id,action,state,config_generation,entry_generation) VALUES(?1,?2,?3,?4,'issued',?5,?6) ON CONFLICT(operation_id) DO UPDATE SET updated_at=unixepoch() WHERE sync_tasks.state='issued' AND sync_tasks.job_id=excluded.job_id",params![issued.id,issued.job,issued.entry,issued.phase,issued.config,issued.versions[0]])?;
+            if changed != 1 {
+                return Err(invalid("issued operation cannot replace settled evidence"));
+            }
+            super::issued::write(&tx, &issued)?;
         }
         Command::Confirm {
             epoch,
@@ -491,11 +500,12 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
             if !lease.valid_now() {
                 return Err(invalid("UPLOAD_LEASE_LOST"));
             }
-            let stored: Option<String>=tx.query_row("SELECT native_capture FROM sync_tasks WHERE operation_id=?1 AND job_id=?2 AND entry_id=?3 AND state='issued'",params![operation.id,epoch.job,operation.entry],|r|r.get(0)).optional()?;
-            let stored: Issued = serde_json::from_str(
-                &stored.ok_or_else(|| invalid("no issued operation to confirm"))?,
-            )
-            .map_err(|_| invalid("invalid operation evidence"))?;
+            let matches:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM sync_tasks WHERE operation_id=?1 AND job_id=?2 AND entry_id=?3 AND state='issued')",params![operation.id,epoch.job,operation.entry],|r|r.get(0))?;
+            if !matches {
+                return Err(invalid("no issued operation to confirm"));
+            }
+            let stored = super::issued::read(&tx, &operation.id)?
+                .ok_or_else(|| invalid("no issued operation to confirm"))?;
             if stored.generation != operation.generation
                 || stored.versions != operation.versions
                 || stored.body != operation.body
@@ -542,10 +552,11 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
             if operation.phase == "delete" {
                 tx.execute("UPDATE sync_entries SET native_retired=CASE WHEN native_local_version=?2 THEN 1 ELSE 0 END,
                     native_photo_id=NULL,native_master_id=NULL,native_asset_revision=NULL,native_master_revision=NULL,
-                    native_content_generation=NULL,native_resource_baseline=NULL,native_baseline_metadata=NULL,
+                    native_content_generation=NULL,native_has_baseline=0,
                     native_confirmed_generation=NULL,native_dirty=CASE WHEN native_local_version=?2 THEN 0 ELSE 1 END,
                     native_acked_deletion_version=MAX(native_acked_deletion_version,?3) WHERE id=?1",
                     params![operation.entry,operation.versions[0],operation.versions[3]])?;
+                super::records::set_baseline_document(&tx, operation.entry, None)?;
             } else {
                 let revision = |name: &str| {
                     records
@@ -571,24 +582,8 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
                     WHEN native_local_version<>?2 OR native_metadata_version>native_acked_metadata_version
                         OR native_content_version>native_acked_content_version THEN 2
                     ELSE 0 END WHERE id=?1", params![operation.entry,operation.versions[0]])?;
-                let fields = operation.body["operations"]
-                    .as_array()
-                    .and_then(|ops| {
-                        ops.iter()
-                            .find(|op| op["record"]["recordName"] == operation.photo)
-                    })
-                    .map(|op| op["record"]["fields"].clone())
-                    .unwrap_or(Value::Null);
-                tx.execute(
-                    "UPDATE sync_entries SET native_baseline_metadata=?2 WHERE id=?1",
-                    params![
-                        operation.entry,
-                        serde_json::to_string(&fields)
-                            .map_err(|_| invalid("invalid metadata baseline"))?
-                    ],
-                )?;
             }
-            tx.execute("UPDATE sync_conflicts SET state='resolved',resolution='confirmed issued operation',resolved_at=unixepoch() WHERE entry_id=?1 AND kind='native' AND state='open' AND json_extract(native_detail,'$.reason') IN ('remote change intersects an unconfirmed local edit; preserve both versions','another local/cloud identity owns this path')",[operation.entry])?;
+            tx.execute("UPDATE sync_conflicts SET state='resolved',resolution='confirmed issued operation',resolved_at=unixepoch() WHERE entry_id=?1 AND kind='native' AND state='open' AND native_reason IN ('remote change intersects an unconfirmed local edit; preserve both versions','another local/cloud identity owns this path')",[operation.entry])?;
             if operation.phase != "delete" {
                 let mut set = super::super::native::records::RecordSet::default();
                 if records.len() == 2 {
@@ -613,13 +608,13 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
                         .photos
                         .first()
                         .ok_or_else(|| invalid("confirmed pair contains no photo"))?;
-                    tx.execute(
-                        "UPDATE sync_entries SET native_resource_baseline=?2 WHERE id=?1",
-                        params![
-                            operation.entry,
-                            serde_json::to_string(photo)
-                                .map_err(|_| invalid("invalid confirmed photo baseline"))?
-                        ],
+                    super::records::set_baseline_document(
+                        &tx,
+                        operation.entry,
+                        Some(
+                            &serde_json::to_string(&photo)
+                                .map_err(|_| invalid("invalid confirmed photo"))?,
+                        ),
                     )?;
                     // Reuse exact owned upload bytes in later metadata-only rounds.
                     for (name, role, asset) in [
@@ -637,11 +632,7 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
                         }
                     }
                 } else {
-                    let baseline: Option<String> = tx.query_row(
-                        "SELECT native_resource_baseline FROM sync_entries WHERE id=?1",
-                        [operation.entry],
-                        |r| r.get(0),
-                    )?;
+                    let baseline = super::records::baseline_document(&tx, operation.entry)?;
                     if let Some(baseline) = baseline {
                         let mut photo: super::super::RemotePhoto = serde_json::from_str(&baseline)
                             .map_err(|_| invalid("invalid confirmed resource baseline"))?;
@@ -656,13 +647,13 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
                             photo.events = serde_json::from_value(events.clone())
                                 .map_err(|_| invalid("invalid confirmed edit events"))?;
                         }
-                        tx.execute(
-                            "UPDATE sync_entries SET native_resource_baseline=?2 WHERE id=?1",
-                            params![
-                                operation.entry,
-                                serde_json::to_string(&photo)
-                                    .map_err(|_| invalid("invalid confirmed resource baseline"))?
-                            ],
+                        super::records::set_baseline_document(
+                            &tx,
+                            operation.entry,
+                            Some(
+                                &serde_json::to_string(&photo)
+                                    .map_err(|_| invalid("invalid confirmed photo"))?,
+                            ),
                         )?;
                     }
                 }
@@ -678,22 +669,25 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
             }
         }
         Command::CleanPublication { id } => {
-            tx.execute("UPDATE sync_publications SET role_state=NULL,old_snapshot=NULL WHERE publication_id=?1 AND state='complete'",[id])?;
+            super::recovery::set_details(&tx, &id, None)?;
         }
         Command::Rollback { id } => {
-            tx.execute("UPDATE sync_publications SET state='pending',role_state=NULL,old_snapshot=NULL WHERE publication_id=?1 AND state='publishing'",[id])?;
+            tx.execute("UPDATE sync_publications SET state='pending' WHERE publication_id=?1 AND state='publishing'",[&id])?;
+            super::recovery::set_details(&tx, &id, None)?;
         }
         Command::Publishing { id, details } => {
-            let captured:String=tx.query_row("SELECT captured_versions FROM sync_publications WHERE publication_id=?1 AND state IN ('pending','publishing')",[&id],|r|r.get(0))?;
-            let capture: Value = serde_json::from_str(&captured)
-                .map_err(|_| invalid("invalid publication capture"))?;
+            let capture = super::recovery::capture(&tx, &id)?
+                .ok_or_else(|| invalid("missing publication capture"))?;
             check_publication(&tx, &capture)?;
-            tx.execute("UPDATE sync_publications SET state='publishing',role_state=?2,old_snapshot=?3 WHERE publication_id=?1",params![id,details.to_string(),if details["hadOld"]==true {Some(json!({"path":details["backup"]}).to_string())}else{None}])?;
+            tx.execute(
+                "UPDATE sync_publications SET state='publishing' WHERE publication_id=?1",
+                [&id],
+            )?;
+            super::recovery::set_details(&tx, &id, Some(&details))?;
         }
         Command::Admit { id, photo, item } => {
-            let captured:String=tx.query_row("SELECT captured_versions FROM sync_publications WHERE publication_id=?1 AND state='publishing'",[&id],|r|r.get(0))?;
-            let capture: Value = serde_json::from_str(&captured)
-                .map_err(|_| invalid("invalid publication capture"))?;
+            let capture = super::recovery::capture(&tx, &id)?
+                .ok_or_else(|| invalid("missing publication capture"))?;
             check_publication(&tx, &capture)?;
             let entry = capture["entry"]
                 .as_i64()
@@ -738,7 +732,15 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
                     .ok_or_else(|| invalid("photo has no confirmed record revision"))
             };
             tx.execute("UPDATE media_items SET storage_location=3,thumbnail_ready=1,thumbnail_generated_at=unixepoch() WHERE id=?1",[media.id])?;
-            tx.execute("UPDATE sync_entries SET media_id=?2,native_photo_id=?3,native_master_id=?4,native_asset_revision=?5,native_master_revision=?6,native_content_generation=?7,native_confirmed_generation=(SELECT database_generation FROM sync_native_progress WHERE job_id=?8),native_baseline_metadata=?9,native_resource_baseline=?10,relative_path=?11,native_local_digest=NULL WHERE id=?1",params![entry,media.id,photo.photo_id,photo.master_id,revision(&photo.photo_id)?,revision(&photo.master_id)?,photo.content_generation,job,json!({"isFavorite":photo.is_favorite,"assetDate":photo.asset_date_ms,"relativePath":photo.relative_path}).to_string(),serde_json::to_string(&photo).map_err(|_|invalid("cannot encode publication baseline"))?,if capture["preserveMetadata"] == true { capture["localRelativePath"].as_str().ok_or_else(|| invalid("missing local metadata path"))? } else { &photo.relative_path }])?;
+            tx.execute("UPDATE sync_entries SET media_id=?2,native_photo_id=?3,native_master_id=?4,native_asset_revision=?5,native_master_revision=?6,native_content_generation=?7,native_confirmed_generation=(SELECT database_generation FROM sync_native_progress WHERE job_id=?8),relative_path=?9,native_digest_entry_id=NULL,native_digest_version=NULL,native_digest_sha256=NULL,native_digest_size=NULL WHERE id=?1",params![entry,media.id,photo.photo_id,photo.master_id,revision(&photo.photo_id)?,revision(&photo.master_id)?,photo.content_generation,job,if capture["preserveMetadata"] == true { capture["localRelativePath"].as_str().ok_or_else(|| invalid("missing local metadata path"))? } else { &photo.relative_path }])?;
+            super::records::set_baseline_document(
+                &tx,
+                entry,
+                Some(
+                    &serde_json::to_string(&photo)
+                        .map_err(|_| invalid("cannot encode publication baseline"))?,
+                ),
+            )?;
             for (asset, role) in [
                 (&photo.original.asset_id, "original"),
                 (&photo.thumbnail.asset_id, "thumbnail"),
@@ -754,7 +756,7 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
             )?;
         }
         Command::Conflict { job, entry, detail } => {
-            tx.execute("INSERT INTO sync_conflicts(job_id,entry_id,kind,native_detail) VALUES(?1,?2,'native',?3) ON CONFLICT(entry_id) WHERE state='open' DO UPDATE SET native_detail=excluded.native_detail",params![job,entry,json!({"reason":detail}).to_string()])?;
+            super::recovery::write_conflict(&tx, job, entry, &detail, None)?;
         }
     }
     tx.commit()?;
@@ -773,7 +775,12 @@ fn check_publication(tx: &Transaction<'_>, capture: &Value) -> Result<()> {
             "local edit/configuration superseded the publication",
         ));
     }
-    let current:Option<String>=tx.query_row("SELECT json_extract(captured_versions,'$.projection') FROM sync_publications WHERE entry_id=?1 AND state IN ('pending','publishing') ORDER BY id DESC LIMIT 1",[entry],|r|r.get(0)).optional()?.flatten();
+    let owner:Option<String>=tx.query_row("SELECT publication_id FROM sync_publications WHERE entry_id=?1 AND capture_projection_present=1 AND state IN ('pending','publishing') ORDER BY id DESC LIMIT 1",[entry],|r|r.get(0)).optional()?;
+    let current = owner
+        .map(|id| super::recovery::capture(tx, &id))
+        .transpose()?
+        .flatten()
+        .and_then(|capture| capture["projection"].as_str().map(str::to_owned));
     if capture.get("projection").is_some() && current.as_deref() != capture["projection"].as_str() {
         return Err(invalid(
             "a later received version superseded the publication",
@@ -793,19 +800,7 @@ fn entry_events(
     tx: &Transaction<'_>,
     entry: i64,
 ) -> Result<super::super::native::receive::EditEvents> {
-    let events: (Option<String>, Option<String>, Option<String>) = tx.query_row(
-        "SELECT native_metadata_event,native_content_event,native_deletion_event FROM sync_entries WHERE id=?1",
-        [entry], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
-    )?;
-    let parse = |raw: Option<String>| {
-        raw.map(|raw| serde_json::from_str(&raw).map_err(|_| invalid("invalid local edit event")))
-            .transpose()
-    };
-    Ok(super::super::native::receive::EditEvents {
-        metadata: parse(events.0)?,
-        content: parse(events.1)?,
-        deletion: parse(events.2)?,
-    })
+    super::records::read_events(tx, entry)
 }
 
 fn local_event_wins(
@@ -833,9 +828,26 @@ pub(super) fn project_publication(
     photo: &super::super::RemotePhoto,
     local_digests: &HashMap<String, super::receive::LocalDigest>,
 ) -> Result<ProjectedContent> {
-    let row:Option<(i64,i64,i64,Option<String>,Option<String>,String)>=tx.query_row("SELECT id,native_local_version,native_dirty,native_resource_baseline,native_photo_id,relative_path FROM sync_entries WHERE job_id=?1 AND (native_photo_id=?2 OR relative_path=?3) ORDER BY native_photo_id IS NOT NULL DESC LIMIT 1",params![job,photo.photo_id,photo.relative_path],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?;
-    let (entry, local, dirty, baseline, identity, local_path) = if let Some(row) = row {
-        row
+    let mut row:Option<(i64,i64,i64,Option<String>,String)>=tx.query_row("SELECT id,native_local_version,native_dirty,native_photo_id,relative_path FROM sync_entries WHERE job_id=?1 AND native_photo_id=?2",params![job,photo.photo_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
+    if row.is_none() {
+        row=tx.query_row("SELECT id,native_local_version,native_dirty,native_photo_id,relative_path FROM sync_entries WHERE job_id=?1 AND relative_path=?2",params![job,photo.relative_path],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
+    }
+    let (entry, local, dirty, baseline, identity, local_path) = if let Some((
+        entry,
+        local,
+        dirty,
+        identity,
+        path,
+    )) = row
+    {
+        (
+            entry,
+            local,
+            dirty,
+            super::records::baseline_document(tx, entry)?,
+            identity,
+            path,
+        )
     } else {
         tx.execute("INSERT INTO sync_entries(job_id,relative_path,native_photo_id,native_master_id) VALUES(?1,?2,?3,?4)",params![job,photo.relative_path,photo.photo_id,photo.master_id])?;
         (
@@ -843,8 +855,17 @@ pub(super) fn project_publication(
                 let created = tx.last_insert_rowid();
                 // Collision preservation moved the local occupant, not the
                 // received pair. Move its temporary fragments to the cloud row.
-                tx.execute("UPDATE sync_entries SET native_pending_master=(SELECT native_pending_master FROM sync_entries old WHERE old.job_id=?2 AND old.id<>?1 AND json_extract(old.native_pending_asset,'$.recordName')=?3 LIMIT 1),native_pending_asset=(SELECT native_pending_asset FROM sync_entries old WHERE old.job_id=?2 AND old.id<>?1 AND json_extract(old.native_pending_asset,'$.recordName')=?3 LIMIT 1) WHERE id=?1",params![created,job,photo.photo_id])?;
-                tx.execute("UPDATE sync_entries SET native_pending_master=NULL,native_pending_asset=NULL WHERE job_id=?1 AND id<>?2 AND json_extract(native_pending_asset,'$.recordName')=?3",params![job,created,photo.photo_id])?;
+                let old:Option<i64>=tx.query_row("SELECT entry_id FROM sync_records WHERE job_id=?1 AND owner_kind='pending' AND photo_id=?2 AND entry_id<>?3 LIMIT 1",params![job,photo.photo_id,created],|r|r.get(0)).optional()?.flatten();
+                if let Some(old) = old {
+                    for master in [true, false] {
+                        if let Some(raw) = super::records::pending_document(tx, old, master)? {
+                            let record = serde_json::from_str(&raw)
+                                .map_err(|_| invalid("invalid received record"))?;
+                            super::records::set_pending(tx, created, master, Some(&record))?;
+                        }
+                    }
+                    super::records::clear_pending(tx, old)?;
+                }
                 created
             },
             0,
@@ -854,6 +875,22 @@ pub(super) fn project_publication(
             photo.relative_path.clone(),
         )
     };
+    // A retained confirmation proves the local/cloud association even when
+    // additive schema adoption left this media row at the local-only default.
+    // Do this before the identical-baseline fast path; no user obligation or
+    // publication is settled by repairing availability.
+    tx.execute(
+        "UPDATE media_items SET storage_location=3
+         WHERE storage_location=1 AND id=(
+             SELECT e.media_id FROM sync_entries e
+             JOIN sync_jobs j ON j.id=e.job_id
+             JOIN sync_connections c ON c.id=j.connection_id
+             JOIN sync_native_progress p ON p.job_id=j.id
+             WHERE e.id=?1 AND e.native_photo_id=?2 AND e.native_retired=0
+               AND e.native_confirmed_generation=p.database_generation AND c.enabled=1
+         )",
+        params![entry, photo.photo_id],
+    )?;
     let dirty = NativeDirty(dirty as u8);
     let (metadata_pending, content_pending): (bool, bool) = tx.query_row(
         "SELECT native_metadata_version>native_acked_metadata_version,native_content_version>native_acked_content_version FROM sync_entries WHERE id=?1",
@@ -915,7 +952,7 @@ pub(super) fn project_publication(
         None
     };
     if let Some(reason) = conflict {
-        tx.execute("INSERT INTO sync_conflicts(job_id,entry_id,kind,native_detail) VALUES(?1,?2,'native',?3) ON CONFLICT(entry_id) WHERE state='open' DO UPDATE SET native_detail=excluded.native_detail",params![job,entry,json!({"reason":reason,"remote":photo}).to_string()])?;
+        super::recovery::write_conflict(tx, job, entry, reason, Some(photo))?;
         return Ok(ProjectedContent::Remote);
     }
 
@@ -958,7 +995,7 @@ pub(super) fn project_publication(
     )?;
     // Previously recorded edit/edit disagreements are now ordinary timestamp
     // decisions. Unsupported identities/representations keep their own handling.
-    tx.execute("UPDATE sync_conflicts SET state='resolved',resolution='latest edit event',resolved_at=unixepoch() WHERE entry_id=?1 AND state='open' AND kind='native' AND json_extract(native_detail,'$.reason') IN ('remote change intersects an unconfirmed local edit; preserve both versions','cloud content at this path differs from the local file')",[entry])?;
+    tx.execute("UPDATE sync_conflicts SET state='resolved',resolution='latest edit event',resolved_at=unixepoch() WHERE entry_id=?1 AND state='open' AND kind='native' AND native_reason IN ('remote change intersects an unconfirmed local edit; preserve both versions','cloud content at this path differs from the local file')",[entry])?;
 
     let needs_placement = missing_local
         || !keep_content
@@ -967,7 +1004,8 @@ pub(super) fn project_publication(
         if !preserve_metadata {
             tx.execute("UPDATE media_items SET is_favorite=?2,taken_at=?3 WHERE id=(SELECT media_id FROM sync_entries WHERE id=?1)",params![entry,photo.is_favorite,photo.asset_date_ms.map(|ms|ms.div_euclid(1000))])?;
         }
-        tx.execute("UPDATE sync_entries SET native_resource_baseline=?2,native_baseline_metadata=?3,native_content_generation=?4,native_confirmed_generation=(SELECT database_generation FROM sync_native_progress WHERE job_id=?5) WHERE id=?1",params![entry,encoded,json!({"isFavorite":photo.is_favorite,"assetDate":photo.asset_date_ms,"relativePath":photo.relative_path}).to_string(),photo.content_generation,job])?;
+        tx.execute("UPDATE sync_entries SET native_content_generation=?2,native_confirmed_generation=(SELECT database_generation FROM sync_native_progress WHERE job_id=?3) WHERE id=?1",params![entry,photo.content_generation,job])?;
+        super::records::set_baseline_document(tx, entry, Some(&encoded))?;
         supersede_pending(tx, entry)?;
         // The remote losing original is not a download obligation. It is not
         // labelled verified either: the library still holds the local winner.
@@ -991,7 +1029,8 @@ pub(super) fn project_publication(
     tx.execute("UPDATE sync_publications SET state='superseded' WHERE job_id=?1 AND photo_id=?2 AND publication_id<>?3 AND state='pending'",params![job,photo.photo_id,id])?;
     let desired:(String,Option<i64>,Option<i64>)=tx.query_row("SELECT e.relative_path,m.is_favorite,m.taken_at FROM sync_entries e LEFT JOIN media_items m ON m.id=e.media_id WHERE e.id=?1",[entry],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
     let capture = json!({"job":job,"entry":entry,"local":local,"config":config,"dirty":settled.bits(),"contentGeneration":photo.content_generation,"projection":encoded,"preserveMetadata":preserve_metadata,"localRelativePath":desired.0,"favorite":desired.1,"takenAt":desired.2});
-    tx.execute("INSERT INTO sync_publications(publication_id,job_id,entry_id,photo_id,master_id,original_asset_id,thumbnail_asset_id,captured_versions) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(publication_id) DO UPDATE SET state=CASE WHEN sync_publications.state='superseded' THEN 'pending' ELSE sync_publications.state END,captured_versions=CASE WHEN sync_publications.state IN ('pending','superseded') THEN excluded.captured_versions ELSE sync_publications.captured_versions END",params![id,job,entry,photo.photo_id,photo.master_id,photo.original.asset_id,photo.thumbnail.asset_id,capture.to_string()])?;
+    tx.execute("INSERT INTO sync_publications(publication_id,job_id,entry_id,photo_id,master_id,original_asset_id,thumbnail_asset_id) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(publication_id) DO UPDATE SET state=CASE WHEN sync_publications.state='superseded' THEN 'pending' ELSE sync_publications.state END",params![id,job,entry,photo.photo_id,photo.master_id,photo.original.asset_id,photo.thumbnail.asset_id])?;
+    super::recovery::set_capture(tx, &id, &capture)?;
     // Library-backed verification has no staging bytes. Any new publication
     // (including a shared asset or rename) must obtain staging bytes again;
     // a different photo's adoption cannot satisfy its placement obligation.
@@ -1091,13 +1130,7 @@ fn adoption(
         return Ok(Adoption::Deferred);
     }
     let measured = &observation.digest;
-    tx.execute(
-        "UPDATE sync_entries SET native_local_digest=?2 WHERE id=?1",
-        params![
-            entry,
-            serde_json::to_string(observation).map_err(|_| invalid("invalid local digest"))?
-        ],
-    )?;
+    super::records::set_digest(tx, entry, Some(observation))?;
     let expected = ContentDigest::hex_from_descriptor_base64(&photo.original.file_checksum);
     if Some(measured.hex.as_str()) != expected.as_deref() || measured.size != photo.original.size {
         return Ok(Adoption::Divergent);
@@ -1136,7 +1169,6 @@ fn adoption(
         NativeDirty::CLEAN
     });
     let encoded = serde_json::to_string(photo).map_err(|_| invalid("invalid projected photo"))?;
-    let baseline_metadata = json!({"isFavorite":photo.is_favorite,"assetDate":photo.asset_date_ms,"relativePath":photo.relative_path});
 
     if !keep_metadata {
         tx.execute(
@@ -1152,17 +1184,10 @@ fn adoption(
         "UPDATE media_items SET storage_location=3 WHERE id=?1",
         [media],
     )?;
-    tx.execute(
-        "UPDATE sync_entries SET media_id=?2,native_photo_id=?3,native_master_id=?4,native_asset_revision=?5,native_master_revision=?6,
-            native_content_generation=?7,native_confirmed_generation=?8,native_resource_baseline=?9,
-            native_baseline_metadata=?10,native_local_digest=?11,native_dirty=?12,native_retired=0,
-            native_acked_content_version=MAX(native_acked_content_version,native_content_version),
-            native_acked_metadata_version=CASE WHEN ?13 THEN native_acked_metadata_version ELSE MAX(native_acked_metadata_version,native_metadata_version) END,
-            updated_at=unixepoch()
-         WHERE id=?1",
-        params![entry,media,photo.photo_id,photo.master_id,asset_revision,master_revision,photo.content_generation,generation,encoded,baseline_metadata.to_string(),serde_json::to_string(observation).map_err(|_| invalid("invalid local digest"))?,settled.bits() as i64,keep_metadata as i64],
-    )?;
-    tx.execute("UPDATE sync_conflicts SET state='resolved',resolution='same local and cloud bytes',resolved_at=unixepoch() WHERE entry_id=?1 AND state='open' AND kind='native' AND json_extract(native_detail,'$.reason') IN ('another local/cloud identity owns this path','cloud content at this path differs from the local file')",[entry])?;
+    tx.execute("UPDATE sync_entries SET media_id=?2,native_photo_id=?3,native_master_id=?4,native_asset_revision=?5,native_master_revision=?6,native_content_generation=?7,native_confirmed_generation=?8,native_dirty=?9,native_retired=0,native_acked_content_version=MAX(native_acked_content_version,native_content_version),native_acked_metadata_version=CASE WHEN ?10 THEN native_acked_metadata_version ELSE MAX(native_acked_metadata_version,native_metadata_version) END,updated_at=unixepoch() WHERE id=?1",params![entry,media,photo.photo_id,photo.master_id,asset_revision,master_revision,photo.content_generation,generation,settled.bits() as i64,keep_metadata])?;
+    super::records::set_baseline_document(tx, entry, Some(&encoded))?;
+    super::records::set_digest(tx, entry, Some(observation))?;
+    tx.execute("UPDATE sync_conflicts SET state='resolved',resolution='same local and cloud bytes',resolved_at=unixepoch() WHERE entry_id=?1 AND state='open' AND kind='native' AND native_reason IN ('another local/cloud identity owns this path','cloud content at this path differs from the local file')",[entry])?;
     // Nothing is owed upward. Whatever publication was proposed against this
     // entry proposed to create what the cloud already has.
     tx.execute(

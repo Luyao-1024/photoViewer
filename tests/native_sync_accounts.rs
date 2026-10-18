@@ -109,6 +109,16 @@ async fn switching_accounts_preserves_isolation_and_only_one_account_can_sync() 
     let bob_photo = right.join("photo.jpg");
     common::write_distinct_jpeg(&bob_photo, 64, 48, [210, 40, 60]);
     let pool = db::init_pool(&root.path().join("client.sqlite")).unwrap();
+    assert!(pool
+        .get()
+        .unwrap()
+        .prepare("SELECT native_account_id,native_user_id FROM sync_connections")
+        .is_ok());
+    assert!(pool
+        .get()
+        .unwrap()
+        .prepare("SELECT native_pinned_scope FROM sync_connections")
+        .is_err());
     let (events, mut receiver) = DomainEventSender::new();
     tokio::spawn(async move { while receiver.recv().await.is_some() {} });
     let actor = start_db_actor(pool.clone(), events);
@@ -320,6 +330,7 @@ async fn explicit_legacy_owner_login_preserves_the_existing_photo_and_progress()
     let library = root.path().join("library");
     std::fs::create_dir(&library).unwrap();
     let source = common::write_plain_jpeg(&library, "existing.jpg");
+    common::cache_local_thumbnail(&source);
     let pool = db::init_pool(&root.path().join("client.sqlite")).unwrap();
     let (sender, mut events) = DomainEventSender::new();
     tokio::spawn(async move { while events.recv().await.is_some() {} });
@@ -377,6 +388,25 @@ async fn explicit_legacy_owner_login_preserves_the_existing_photo_and_progress()
         .reauthenticate_native_job(job.id, "owner", "synthetic account password")
         .await
         .unwrap();
+    let account: i64 = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT native_account_id FROM sync_connections WHERE id=?1",
+            [job.connection_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let selected: String = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT value FROM settings WHERE key='native_sync_account'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(selected, account.to_string());
     let scope = service
         .store()
         .native_scope(job.connection_id)

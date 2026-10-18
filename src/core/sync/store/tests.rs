@@ -202,7 +202,7 @@ fn native_entry_columns_start_neutral_so_no_row_is_mistaken_for_a_dirtied_one() 
     let row: (i64, i64, Option<String>, Option<String>, Option<String>, i64) = conn
         .query_row(
             "SELECT native_dirty, native_local_version, native_photo_id, native_confirmed_generation,
-                    native_metadata_event, native_local_version
+                    native_metadata_source, native_local_version
              FROM sync_entries WHERE job_id=?1 AND relative_path='a/photo.jpg'",
             [job.id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),

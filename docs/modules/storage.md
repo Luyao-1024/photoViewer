@@ -34,6 +34,8 @@ bodies in paths such as `src/core/metadata/tests.rs`,
 `src/core/trash/tests.rs`, `src/core/thumbnails/tests.rs`, and
 `src/core/runtime_config/tests.rs`.
 
+Background cache bookkeeping repairs both directions: an existing Small/Medium/Large cache restores `thumbnail_ready`, while a missing cache invalidates it. It probes paths and source stamps without decoding originals, then writes through DbActor only if the captured URI, mtime and size still match. Foreground disk hits keep their write-free path.
+
 Native uploads consume the existing thumbnail cache through
 `thumbnails::cached_upload_thumbnail`, preferring Large/Medium/Small. A missing
 cache returns no thumbnail without decoding media or scheduling generation;
@@ -46,7 +48,7 @@ reduction operate only on cached pixels. See [sync](sync.md) for deferred work.
 Development builds keep SQLite `PRAGMA user_version` fixed at **1**. The
 application is not released yet, so `schema.sql` is the only current definition:
 initialization creates missing tables/indexes and always writes version 1.
-There is no version ladder or version-based rejection. Missing nullable/defaulted fields are added transactionally without clearing library or sync state.
+There is no version ladder or version-based rejection. Recognized native-sync JSON columns are converted to typed columns and child rows in one transaction before generic drift detection. Conversion preserves IDs, versions, pending edits, opaque receive positions and recovery evidence, verifies issued-request reconstruction and foreign keys, and removes document columns. Unknown legacy state rolls back rather than triggering a history reset. See [native relational storage](native-sync-relational.md). Missing nullable/defaulted fields are added transactionally without clearing library or sync state. On every database open, local/cloud availability is reconciled from the selected account's retained confirmations, including databases already opened with the new fields' local-only defaults. This changes availability only; dirty versions, deletion intent and issued operations survive.
 Before starting the pool/actor/scanner/sync service, initialization builds an
 in-memory reference from `schema.sql` and compares existing tables' column names,
 types, nullability, defaults, primary-key positions and hidden-column flags.

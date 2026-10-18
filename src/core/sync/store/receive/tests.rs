@@ -201,7 +201,7 @@ fn a_changed_scope_invalidates_every_previous_completeness_claim() {
         .get()
         .unwrap()
         .query_row(
-            "SELECT COUNT(*) FROM sync_entries WHERE job_id=?1 AND (native_pending_master IS NOT NULL OR native_pending_asset IS NOT NULL)",
+            "SELECT COUNT(DISTINCT entry_id) FROM sync_records WHERE job_id=?1 AND owner_kind='pending'",
             [job.id],
             |row| row.get(0),
         )
@@ -635,16 +635,23 @@ fn enrol_local_file(pool: &crate::core::db::DbPool, job: &SyncJob, path: &str) -
 /// Give the inbox the record revisions adoption binds against.
 fn seed_inbox_revisions(pool: &crate::core::db::DbPool, job: &SyncJob, photo: &RemotePhoto) {
     let conn = pool.get().unwrap();
-    for (column, name, tag) in [
-        ("native_pending_asset", &photo.photo_id, "tag-asset-1"),
-        ("native_pending_master", &photo.master_id, "tag-master-1"),
-    ] {
-        let record = serde_json::json!({"recordName":name,"recordChangeTag":tag});
-        conn.execute(
-            &format!("UPDATE sync_entries SET {column}=?2 WHERE job_id=?1 AND relative_path=?3"),
-            rusqlite::params![job.id, record.to_string(), photo.relative_path],
+    let entry: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM sync_entries WHERE job_id=?1 AND relative_path=?2",
+            rusqlite::params![job.id, photo.relative_path],
+            |r| r.get(0),
         )
+        .optional()
         .unwrap();
+    let Some(entry) = entry else { return };
+    for (master, name, tag) in [
+        (false, &photo.photo_id, "tag-asset-1"),
+        (true, &photo.master_id, "tag-master-1"),
+    ] {
+        let record =
+            serde_json::from_value(serde_json::json!({"recordName":name,"recordChangeTag":tag}))
+                .unwrap();
+        super::super::records::set_pending(&conn, entry, master, Some(&record)).unwrap();
     }
 }
 
@@ -709,18 +716,12 @@ fn a_never_published_file_adopts_the_cloud_photo_it_is_proven_to_be() {
     // second cycle does not re-read the library to reach the same conclusion.
     let cached: Option<String> = conn
         .query_row(
-            "SELECT native_local_digest FROM sync_entries WHERE job_id = ?1",
+            "SELECT native_digest_sha256 FROM sync_entries WHERE job_id = ?1",
             [job.id],
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(
-        serde_json::from_str::<LocalDigest>(&cached.unwrap())
-            .unwrap()
-            .digest
-            .hex,
-        ContentDigest::of(b"").hex
-    );
+    assert_eq!(cached.unwrap(), ContentDigest::of(b"").hex);
 
     // Nothing to download: the local file is the cloud original. Leaving the
     // obligations outstanding would be worse than a wasted download — while any
@@ -900,7 +901,7 @@ fn divergent_bytes_cannot_be_adopted_before_preserving_the_local_path() {
     assert!(identity.is_none(), "a divergent photo was adopted anyway");
     let reason: Option<String> = conn
         .query_row(
-            "SELECT json_extract(native_detail, '$.reason') FROM sync_conflicts WHERE job_id = ?1 AND state = 'open'",
+            "SELECT native_reason FROM sync_conflicts WHERE job_id = ?1 AND state = 'open'",
             [job.id],
             |row| row.get(0),
         )
@@ -914,7 +915,7 @@ fn divergent_bytes_cannot_be_adopted_before_preserving_the_local_path() {
     // conflicting photo would re-read its original on every cycle.
     let cached: Option<String> = conn
         .query_row(
-            "SELECT native_local_digest FROM sync_entries WHERE job_id = ?1",
+            "SELECT native_digest_sha256 FROM sync_entries WHERE job_id = ?1",
             [job.id],
             |row| row.get(0),
         )
@@ -954,7 +955,7 @@ fn a_hidden_cloud_photo_is_never_adopted() {
     assert!(identity.is_none());
     let reason: Option<String> = conn
         .query_row(
-            "SELECT json_extract(native_detail, '$.reason') FROM sync_conflicts WHERE job_id = ?1 AND state = 'open'",
+            "SELECT native_reason FROM sync_conflicts WHERE job_id = ?1 AND state = 'open'",
             [job.id],
             |row| row.get(0),
         )
@@ -1029,12 +1030,19 @@ fn an_unchanged_projection_preserves_both_pending_categories() {
         .unwrap()
         .execute(
             "UPDATE sync_entries SET native_photo_id = 'a1', native_master_id = 'master-a1',
-                native_resource_baseline = ?2, native_dirty = 2,
+                native_has_baseline = 1, native_dirty = 2,
                 native_metadata_version = 2, native_content_version = 2
              WHERE id = ?1",
-            rusqlite::params![entry, serde_json::to_string(&photo).unwrap()],
+            rusqlite::params![entry],
         )
         .unwrap();
+
+    super::super::records::set_baseline_document(
+        &pool.get().unwrap(),
+        entry,
+        Some(&serde_json::to_string(&photo).unwrap()),
+    )
+    .unwrap();
 
     // Content and metadata are both pending — the state a mid-flight edit
     // produces. It is a bitmask, not a single value, so it must not read as
@@ -1401,9 +1409,13 @@ fn confirmed_local(
     let baseline = empty_photo("a1", "camera/one.jpg");
     let entry = enrol_local_file(&pool, &job, "camera/one.jpg");
     seed_inbox_revisions(&pool, &job, &baseline);
-    pool.get().unwrap().execute(
-        "UPDATE sync_entries SET native_photo_id='a1',native_master_id='master-a1',native_dirty=0,native_resource_baseline=?2 WHERE id=?1",
-        rusqlite::params![entry,serde_json::to_string(&baseline).unwrap()]).unwrap();
+    pool.get().unwrap().execute("UPDATE sync_entries SET native_photo_id='a1',native_master_id='master-a1',native_dirty=0 WHERE id=?1",[entry]).unwrap();
+    super::super::records::set_baseline_document(
+        &pool.get().unwrap(),
+        entry,
+        Some(&serde_json::to_string(&baseline).unwrap()),
+    )
+    .unwrap();
     (store, pool, job, entry, baseline)
 }
 
@@ -1438,7 +1450,7 @@ fn adoption_cannot_confirm_an_edit_made_after_measurement() {
         .promote_remote_graph(job.id, graph(vec![remote]), "target", measured)
         .unwrap();
     let row:(i64,i64,Option<String>,Option<String>)=pool.get().unwrap().query_row(
-        "SELECT native_dirty,native_acked_content_version,native_photo_id,native_local_digest FROM sync_entries WHERE id=?1",[entry],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+        "SELECT native_dirty,native_acked_content_version,native_photo_id,native_digest_sha256 FROM sync_entries WHERE id=?1",[entry],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
     assert_ne!(row.0, 0, "old digest must not clear the later edit");
     assert_eq!(row.1, 0);
     assert!(row.2.is_none());
@@ -1568,16 +1580,10 @@ fn concurrent_content_and_metadata_choose_each_category_independently() {
         } else {
             let pending = store.pending_publications(job.id).unwrap();
             assert_eq!(pending.len(), 1, "{name}");
-            let capture: String = pool
-                .get()
-                .unwrap()
-                .query_row(
-                    "SELECT captured_versions FROM sync_publications WHERE publication_id=?1",
-                    [&pending[0].publication_id],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            let capture: serde_json::Value = serde_json::from_str(&capture).unwrap();
+            let capture =
+                super::super::recovery::capture(&pool.get().unwrap(), &pending[0].publication_id)
+                    .unwrap()
+                    .unwrap();
             assert_eq!(capture["preserveMetadata"], metadata_wins, "{name}");
             assert_eq!(
                 store.outstanding_resources(job.id).unwrap().len(),
@@ -1635,21 +1641,16 @@ fn a_cached_digest_is_also_scoped_to_the_measured_version() {
     let remote = empty_photo("a1", "camera/one.jpg");
     let entry = enrol_local_file(&pool, &job, "camera/one.jpg");
     seed_inbox_revisions(&pool, &job, &remote);
-    pool.get()
-        .unwrap()
-        .execute(
-            "UPDATE sync_entries SET native_local_digest=?2 WHERE id=?1",
-            rusqlite::params![
-                entry,
-                serde_json::to_string(&LocalDigest {
-                    entry_id: entry,
-                    local_version: 0,
-                    digest: ContentDigest::of(b"")
-                })
-                .unwrap()
-            ],
-        )
-        .unwrap();
+    super::super::records::set_digest(
+        &pool.get().unwrap(),
+        entry,
+        Some(&LocalDigest {
+            entry_id: entry,
+            local_version: 0,
+            digest: ContentDigest::of(b""),
+        }),
+    )
+    .unwrap();
     assert!(store.unclaimed_local_entries(job.id).unwrap()[0]
         .cached
         .is_some());
@@ -1663,7 +1664,7 @@ fn a_cached_digest_is_also_scoped_to_the_measured_version() {
     store
         .promote_remote_graph(job.id, graph(vec![remote]), "target", measured)
         .unwrap();
-    let (dirty,acked,cached):(i64,i64,Option<String>)=pool.get().unwrap().query_row("SELECT native_dirty,native_acked_content_version,native_local_digest FROM sync_entries WHERE id=?1",[entry],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+    let (dirty,acked,cached):(i64,i64,Option<String>)=pool.get().unwrap().query_row("SELECT native_dirty,native_acked_content_version,native_digest_sha256 FROM sync_entries WHERE id=?1",[entry],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
     assert_ne!(dirty, 0);
     assert_eq!(acked, 0);
     assert!(cached.is_none());
@@ -1749,7 +1750,7 @@ fn missing_edit_events_have_a_deterministic_nonblocking_fallback() {
             pool.get()
                 .unwrap()
                 .execute(
-                    "UPDATE sync_entries SET native_metadata_event=NULL WHERE id=?1",
+                    "UPDATE sync_entries SET native_metadata_edited_ms=NULL,native_metadata_source=NULL,native_metadata_event_id=NULL WHERE id=?1",
                     [entry],
                 )
                 .unwrap();
@@ -1884,4 +1885,62 @@ fn missing_from_snapshot_does_not_retire_without_explicit_tombstone() {
         )
         .unwrap();
     assert!(retired);
+}
+
+#[test]
+fn unchanged_confirmed_receive_restores_location_without_clearing_edits() {
+    use crate::core::sync::store::ChangeCategory;
+    for category in [
+        None,
+        Some(ChangeCategory::Metadata),
+        Some(ChangeCategory::Content),
+    ] {
+        let (store, pool, job, entry, baseline) =
+            confirmed_local(&format!("repair-location-{category:?}"));
+        pool.get().unwrap().execute(
+            "UPDATE sync_entries SET native_confirmed_generation=(SELECT database_generation FROM sync_native_progress WHERE job_id=?2) WHERE id=?1",
+            rusqlite::params![entry,job.id],
+        ).unwrap();
+        if let Some(category) = category {
+            note_edit(&pool, entry, category, 500);
+        }
+        pool.get().unwrap().execute(
+            "UPDATE media_items SET storage_location=1,thumbnail_ready=1 WHERE id=(SELECT media_id FROM sync_entries WHERE id=?1)",
+            [entry],
+        ).unwrap();
+        store
+            .promote_remote_graph(
+                job.id,
+                graph(vec![baseline]),
+                "zone.repaired",
+                no_local_digests(),
+            )
+            .unwrap();
+        let state:(i64,bool,i64)=pool.get().unwrap().query_row(
+            "SELECT m.storage_location,m.thumbnail_ready,e.native_dirty FROM sync_entries e JOIN media_items m ON m.id=e.media_id WHERE e.id=?1",
+            [entry], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
+        ).unwrap();
+        assert_eq!(
+            state,
+            (3, true, if category.is_some() { 2 } else { 0 }),
+            "{category:?}"
+        );
+        assert!(
+            store.outstanding_resources(job.id).unwrap().is_empty(),
+            "repairing an identical baseline must not schedule asset downloads"
+        );
+        if let Some(category) = category {
+            let e = store
+                .uplink_view(job.id)
+                .unwrap()
+                .into_iter()
+                .find(|e| e.entry_id == entry)
+                .unwrap();
+            match category {
+                ChangeCategory::Metadata => assert!(e.metadata_version > e.acked_metadata_version),
+                ChangeCategory::Content => assert!(e.content_version > e.acked_content_version),
+                ChangeCategory::Deletion => unreachable!(),
+            }
+        }
+    }
 }

@@ -23,20 +23,39 @@ pub enum PhotoAction {
 impl SyncStore {
     pub fn managed_photos(&self, job: i64) -> Result<Vec<ManagedPhoto>> {
         let conn = self.pool.get()?;
-        let mut stmt = conn.prepare("SELECT e.id,e.relative_path,e.native_local_version,e.native_photo_id IS NOT NULL,e.native_retired,f.native_detail,m.path FROM sync_entries e LEFT JOIN sync_conflicts f ON f.entry_id=e.id AND f.state='open' LEFT JOIN media_items m ON m.id=e.media_id AND m.trashed_at IS NULL WHERE e.job_id=?1 ORDER BY e.relative_path")?;
+        let mut stmt=conn.prepare("SELECT e.id,e.relative_path,e.native_local_version,e.native_photo_id IS NOT NULL,e.native_retired,f.id,m.path FROM sync_entries e LEFT JOIN sync_conflicts f ON f.entry_id=e.id AND f.state='open' LEFT JOIN media_items m ON m.id=e.media_id AND m.trashed_at IS NULL WHERE e.job_id=?1 ORDER BY e.relative_path")?;
         let rows = stmt
             .query_map([job], |r| {
-                Ok(ManagedPhoto {
-                    entry_id: r.get(0)?,
-                    relative_path: r.get(1)?,
-                    local_version: r.get(2)?,
-                    remote: r.get(3)?,
-                    retired: r.get(4)?,
-                    conflict: r.get(5)?,
-                    path: r.get::<_, Option<String>>(6)?.map(PathBuf::from),
-                })
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, bool>(3)?,
+                    r.get::<_, bool>(4)?,
+                    r.get::<_, Option<i64>>(5)?,
+                    r.get::<_, Option<String>>(6)?,
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        let rows = rows
+            .into_iter()
+            .map(
+                |(entry_id, relative_path, local_version, remote, retired, conflict, path)| {
+                    Ok(ManagedPhoto {
+                        entry_id,
+                        relative_path,
+                        local_version,
+                        remote,
+                        retired,
+                        conflict: conflict
+                            .map(|id| super::recovery::conflict_document(&conn, id))
+                            .transpose()?
+                            .flatten(),
+                        path: path.map(PathBuf::from),
+                    })
+                },
+            )
+            .collect::<Result<Vec<_>>>()?;
         Ok(rows)
     }
 }
@@ -51,13 +70,18 @@ pub(super) fn apply(
     recovery: Option<String>,
 ) -> Result<()> {
     let invalid = |message: &str| AppError::Backend(message.into());
-    let current: (i64,Option<String>,Option<String>,Option<String>) = tx.query_row("SELECT e.native_local_version,e.native_photo_id,e.native_master_id,f.native_detail FROM sync_entries e LEFT JOIN sync_conflicts f ON f.entry_id=e.id AND f.state='open' WHERE e.job_id=?1 AND e.id=?2",params![job,entry],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
-    if current.0 != version || current.3 != conflict {
+    let current: (i64,Option<String>,Option<String>,Option<i64>) = tx.query_row("SELECT e.native_local_version,e.native_photo_id,e.native_master_id,f.id FROM sync_entries e LEFT JOIN sync_conflicts f ON f.entry_id=e.id AND f.state='open' WHERE e.job_id=?1 AND e.id=?2",params![job,entry],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
+    let current_detail = current
+        .3
+        .map(|id| super::recovery::conflict_document(tx, id))
+        .transpose()?
+        .flatten();
+    if current.0 != version || current_detail != conflict {
         return Err(invalid(
             "photo changed while the decision was open; refresh and retry",
         ));
     }
-    let busy: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sync_tasks WHERE entry_id=?1 AND state='issued') OR EXISTS(SELECT 1 FROM sync_publications WHERE entry_id=?1 AND state='publishing') OR EXISTS(SELECT 1 FROM sync_job_changes WHERE job_id=?2) OR EXISTS(SELECT 1 FROM settings WHERE key='sync_reset_pending')",params![entry,job],|r|r.get(0))?;
+    let busy: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sync_tasks WHERE entry_id=?1 AND state='issued') OR EXISTS(SELECT 1 FROM sync_publications WHERE entry_id=?1 AND state='publishing') OR EXISTS(SELECT 1 FROM sync_job_changes WHERE job_id=?2) OR EXISTS(SELECT 1 FROM sync_reset_state WHERE id=1)",params![entry,job],|r|r.get(0))?;
     if busy {
         return Err(invalid(
             "an operation is still being reconciled; synchronize before choosing a resolution",
@@ -95,7 +119,8 @@ pub(super) fn apply(
                     "cloud deletion requires a confirmed identity without a conflict",
                 ));
             }
-            tx.execute("UPDATE sync_entries SET native_dirty=4,native_local_version=native_local_version+1,native_deletion_version=native_deletion_version+1,native_deletion_event=?2 WHERE id=?1",params![entry,stamp])?;
+            super::records::set_event_document(tx, entry, "deletion", Some(&stamp))?;
+            tx.execute("UPDATE sync_entries SET native_dirty=4,native_local_version=native_local_version+1,native_deletion_version=native_deletion_version+1 WHERE id=?1",[entry])?;
         }
         PhotoAction::Recreate => {
             if current.1.is_some() || current.3.is_some() {
@@ -109,8 +134,9 @@ pub(super) fn apply(
             if current.3.is_none() {
                 return Err(invalid("this conflict was already resolved"));
             }
-            let detail: serde_json::Value = serde_json::from_str(current.3.as_deref().unwrap())
-                .map_err(|_| invalid("invalid conflict details"))?;
+            let detail: serde_json::Value =
+                serde_json::from_str(current_detail.as_deref().unwrap())
+                    .map_err(|_| invalid("invalid conflict details"))?;
             let photo: Option<super::super::RemotePhoto> = detail
                 .get("remote")
                 .filter(|p| !p.is_null())
@@ -144,13 +170,20 @@ pub(super) fn apply(
                         }
                         tx.execute("UPDATE sync_native_resources SET state='retained' WHERE job_id=?1 AND ((asset_id=?2 AND role='original') OR (asset_id=?3 AND role='thumbnail')) AND state='staged'",params![job,photo.original.asset_id,photo.thumbnail.asset_id])?;
 
-                        tx.execute("UPDATE sync_entries SET native_dirty=2,native_metadata_version=native_metadata_version+1,native_content_version=native_content_version+1,native_metadata_event=?2,native_content_event=?2,native_resource_baseline=?3 WHERE id=?1",params![entry,stamp,encoded])?;
+                        super::records::set_event_document(tx, entry, "metadata", Some(&stamp))?;
+                        super::records::set_event_document(tx, entry, "content", Some(&stamp))?;
+                        tx.execute("UPDATE sync_entries SET native_dirty=2,native_metadata_version=native_metadata_version+1,native_content_version=native_content_version+1 WHERE id=?1",[entry])?;
+                        super::records::set_baseline_document(tx, entry, Some(&encoded))?;
                     }
                     PhotoAction::UseCloud => {
                         if recovery.is_none() {
                             return Err(invalid("local recovery evidence must be saved before accepting cloud content"));
                         }
-                        tx.execute("UPDATE sync_entries SET native_dirty=0,native_resource_baseline=NULL WHERE id=?1",[entry])?;
+                        tx.execute(
+                            "UPDATE sync_entries SET native_dirty=0 WHERE id=?1",
+                            [entry],
+                        )?;
+                        super::records::set_baseline_document(tx, entry, None)?;
                         tx.execute("DELETE FROM sync_publications WHERE entry_id=?1 AND state<>'publishing'",[entry])?;
                         tx.execute("UPDATE sync_native_resources SET state='pending',staging_path=NULL WHERE job_id=?1 AND ((asset_id=?2 AND role='original') OR (asset_id=?3 AND role='thumbnail'))",params![job,photo.original.asset_id,photo.thumbnail.asset_id])?;
                         // The identity is already bound by the branch above, so
@@ -164,10 +197,7 @@ pub(super) fn apply(
                         )?;
                         // The user explicitly adopted this path after preserving its old file.
                         // The durable publication remains pending until both roles commit.
-                        tx.execute(
-                            "UPDATE sync_entries SET native_resource_baseline=?2 WHERE id=?1",
-                            params![entry, encoded],
-                        )?;
+                        super::records::set_baseline_document(tx, entry, Some(&encoded))?;
                     }
                     _ => unreachable!(),
                 }
@@ -199,10 +229,13 @@ fn require_media(tx: &rusqlite::Transaction<'_>, entry: i64) -> Result<()> {
 }
 fn recreate(tx: &rusqlite::Transaction<'_>, entry: i64, stamp: &str) -> Result<()> {
     require_media(tx, entry)?;
-    tx.execute("UPDATE sync_entries SET native_retired=0,native_dirty=1,native_local_version=native_local_version+1,native_metadata_version=native_metadata_version+1,native_content_version=native_content_version+1,native_metadata_event=?2,native_content_event=?2 WHERE id=?1",params![entry,stamp])?;
+    super::records::set_event_document(tx, entry, "metadata", Some(stamp))?;
+    super::records::set_event_document(tx, entry, "content", Some(stamp))?;
+    tx.execute("UPDATE sync_entries SET native_retired=0,native_dirty=1,native_local_version=native_local_version+1,native_metadata_version=native_metadata_version+1,native_content_version=native_content_version+1 WHERE id=?1",[entry])?;
     Ok(())
 }
 pub(super) fn retire(tx: &rusqlite::Transaction<'_>, entry: i64) -> Result<()> {
-    tx.execute("UPDATE sync_entries SET native_retired=1,native_dirty=0,native_photo_id=NULL,native_master_id=NULL,native_asset_revision=NULL,native_master_revision=NULL,native_content_generation=NULL,native_resource_baseline=NULL,native_baseline_metadata=NULL,native_confirmed_generation=NULL WHERE id=?1",[entry])?;
+    super::records::set_baseline_document(tx, entry, None)?;
+    tx.execute("UPDATE sync_entries SET native_retired=1,native_dirty=0,native_photo_id=NULL,native_master_id=NULL,native_asset_revision=NULL,native_master_revision=NULL,native_content_generation=NULL,native_has_baseline=0,native_confirmed_generation=NULL WHERE id=?1",[entry])?;
     Ok(())
 }

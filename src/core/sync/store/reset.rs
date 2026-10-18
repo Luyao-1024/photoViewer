@@ -2,28 +2,25 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 
-const RESET_KEY: &str = "sync_reset_pending";
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ResetIntent {
     pub token: String,
     pub error: Option<String>,
 }
 
-fn encode_error(error: impl std::fmt::Display) -> AppError {
-    AppError::Backend(format!("invalid sync reset intent: {error}"))
-}
-
 fn read(conn: &rusqlite::Connection) -> Result<Option<ResetIntent>> {
-    let json: Option<String> = conn
-        .query_row(
-            "SELECT value FROM settings WHERE key=?1",
-            [RESET_KEY],
-            |row| row.get(0),
-        )
-        .optional()?;
-    json.map(|json| serde_json::from_str(&json).map_err(encode_error))
-        .transpose()
+    conn.query_row(
+        "SELECT token,last_error FROM sync_reset_state WHERE id=1",
+        [],
+        |r| {
+            Ok(ResetIntent {
+                token: r.get(0)?,
+                error: r.get(1)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 pub(super) fn pending(conn: &rusqlite::Connection) -> Result<bool> {
@@ -81,9 +78,7 @@ impl SyncStore {
 pub(super) fn begin(pool: &DbPool, token: String) -> Result<SyncWriteResult> {
     let mut conn = pool.get()?;
     let tx = conn.transaction()?;
-    let intent =
-        serde_json::to_string(&ResetIntent { token, error: None }).map_err(encode_error)?;
-    tx.execute("INSERT INTO settings(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![RESET_KEY, intent])?;
+    tx.execute("INSERT INTO sync_reset_state(id,token,last_error) VALUES(1,?1,NULL) ON CONFLICT(id) DO UPDATE SET token=excluded.token,last_error=NULL",[token])?;
     // Monotonic generations also stop runs that do not monitor the UI switch.
     tx.execute(
         "UPDATE sync_jobs SET config_generation=config_generation+1",
@@ -96,18 +91,10 @@ pub(super) fn begin(pool: &DbPool, token: String) -> Result<SyncWriteResult> {
 pub(super) fn fail(pool: &DbPool, token: String, error: String) -> Result<SyncWriteResult> {
     let mut conn = pool.get()?;
     let tx = conn.transaction()?;
-    if let Some(mut intent) = read(&tx)? {
-        if intent.token == token {
-            intent.error = Some(error);
-            tx.execute(
-                "UPDATE settings SET value=?1 WHERE key=?2",
-                params![
-                    serde_json::to_string(&intent).map_err(encode_error)?,
-                    RESET_KEY
-                ],
-            )?;
-        }
-    }
+    tx.execute(
+        "UPDATE sync_reset_state SET last_error=?2 WHERE token=?1",
+        params![token, error],
+    )?;
     tx.commit()?;
     Ok(SyncWriteResult::None)
 }
@@ -119,14 +106,16 @@ pub(super) fn finish(pool: &DbPool, token: String) -> Result<SyncWriteResult> {
         return Ok(SyncWriteResult::Changed(false));
     }
     let changes = {
-        let mut stmt = tx.prepare("SELECT job_id,payload FROM sync_job_changes ORDER BY job_id")?;
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-        })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()?
+        let mut stmt = tx.prepare("SELECT job_id FROM sync_job_changes ORDER BY job_id")?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
     };
-    for (id, json) in changes {
-        let change: PendingChange = serde_json::from_str(&json).map_err(encode_error)?;
+    for id in changes {
+        let Some(change) = super::state::read_change(&tx, id)? else {
+            continue;
+        };
         if change.delete {
             // Honor an explicit task removal, but keep the account/credential.
             tx.execute("DELETE FROM sync_jobs WHERE id=?1", [id])?;
@@ -160,14 +149,19 @@ pub(super) fn finish(pool: &DbPool, token: String) -> Result<SyncWriteResult> {
     tx.execute_batch(
         "DELETE FROM media_items WHERE storage_location=2;
         UPDATE media_items SET storage_location=1 WHERE storage_location=3;
+        DELETE FROM sync_publications;
+        DELETE FROM sync_native_resources;
+        DELETE FROM sync_native_progress;
+        DELETE FROM sync_bootstrap_types;
         DELETE FROM sync_tasks;
         DELETE FROM sync_conflicts;
         DELETE FROM sync_entries;
+        DELETE FROM sync_records;
         DELETE FROM sync_job_changes;
         UPDATE sync_jobs SET paused=0,config_generation=config_generation+1,
             last_started_at=NULL,last_completed_at=NULL,last_error=NULL;",
     )?;
-    tx.execute("DELETE FROM settings WHERE key=?1", [RESET_KEY])?;
+    tx.execute("DELETE FROM sync_reset_state WHERE token=?1", [token])?;
     tx.commit()?;
     Ok(SyncWriteResult::Changed(true))
 }

@@ -230,9 +230,10 @@ fn metadata_edits_preserve_the_received_capture_dates_subseconds() {
         [f.media],
     )
     .unwrap();
-    conn.execute(
-        "UPDATE sync_entries SET native_resource_baseline=?2 WHERE id=?1",
-        params![f.operation.entry, serde_json::to_string(&photo).unwrap()],
+    super::super::records::set_baseline_document(
+        &conn,
+        f.operation.entry,
+        Some(&serde_json::to_string(&photo).unwrap()),
     )
     .unwrap();
     drop(conn);
@@ -398,4 +399,16 @@ fn upload_failure_is_persisted_for_one_entry_until_the_next_accepted_cycle() {
         .unwrap()
         .is_none());
     assert_eq!(f.store.pending_issued(f.operation.job).unwrap().len(), 1);
+}
+
+#[test]
+fn issued_records_round_trip_without_adding_absent_wire_keys() {
+    let f = fixture("issued-relational-roundtrip");
+    let restored = super::super::issued::read(&f.store.pool.get().unwrap(), &f.operation.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored, f.operation);
+    assert!(restored.body["operations"][0]["record"]
+        .get("_syncserver")
+        .is_none());
 }

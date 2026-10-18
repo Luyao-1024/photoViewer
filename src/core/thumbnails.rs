@@ -380,7 +380,7 @@ impl ThumbnailLoader {
             .enabled
             .swap(true, AtomicOrdering::Relaxed);
         if !already_started {
-            cache::recover_missing_marks(self);
+            cache::recover_cache_marks(self);
         }
         if let Ok(mut off) = self.background_pull.offset.lock() {
             *off = 0;

@@ -129,9 +129,8 @@ CREATE TABLE IF NOT EXISTS settings (
 -- platform secret store and never persisted in SQLite: a Bearer API key is the
 -- only client credential, and its reference lives in `credential_ref`.
 --
--- `native_pinned_scope` records the exact capability document a successful
--- probe accepted. Later cycles compare against it instead of trusting whatever
--- the server announces at that moment.
+-- Accepted identity, capabilities and limits are scalar columns. A stable
+-- account FK groups connections without a serialized identity document.
 CREATE TABLE IF NOT EXISTS sync_connections (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     provider_kind   TEXT NOT NULL DEFAULT 'native_syncserver'
@@ -149,8 +148,45 @@ CREATE TABLE IF NOT EXISTS sync_connections (
     native_environment  TEXT,
     native_database     TEXT,
     native_database_generation TEXT,
-    native_zones        TEXT CHECK (native_zones IS NULL OR json_valid(native_zones)),
-    native_pinned_scope TEXT CHECK (native_pinned_scope IS NULL OR json_valid(native_pinned_scope)),
+    native_account_id INTEGER REFERENCES sync_accounts(id) ON DELETE SET NULL,
+    native_pinned INTEGER NOT NULL DEFAULT 0,
+    native_auth_mode TEXT,
+    native_user_id TEXT,
+    native_username TEXT,
+    native_resource_bearer_required INTEGER,
+    native_cap_zone_listing INTEGER,
+    native_cap_record_crud INTEGER,
+    native_cap_snapshots INTEGER,
+    native_cap_incremental_changes INTEGER,
+    native_cap_upload_leases INTEGER,
+    native_cap_fencing INTEGER,
+    native_cap_token_current_gate INTEGER,
+    native_cap_upload_phases INTEGER,
+    native_cap_operation_status_read INTEGER,
+    native_cap_asset_upload INTEGER,
+    native_cap_asset_download INTEGER,
+    native_cap_photo_publication INTEGER,
+    native_cap_query_batch INTEGER,
+    native_cap_change_aliases INTEGER,
+    native_cap_apple_authentication INTEGER,
+    native_cap_sharing INTEGER,
+    native_cap_upload_resume INTEGER,
+    native_limit_max_asset_bytes INTEGER,
+    native_limit_thumbnail_max_bytes INTEGER,
+    native_limit_upload_concurrency INTEGER,
+    native_limit_download_concurrency INTEGER,
+    native_limit_upload_idle_timeout_secs INTEGER,
+    native_limit_upload_total_timeout_secs INTEGER,
+    native_limit_db_queue_capacity INTEGER,
+    native_limit_json_body_limit INTEGER,
+    native_limit_lease_ttl_secs INTEGER,
+    native_limit_lease_heartbeat_secs INTEGER,
+    native_limit_control_queue_capacity INTEGER,
+    native_sync_limit_max_page INTEGER,
+    native_sync_limit_max_zones INTEGER,
+    native_record_limit_max_operations INTEGER,
+    native_record_limit_max_record_bytes INTEGER,
+    native_record_limit_max_result_bytes INTEGER,
     native_probed_at    INTEGER,
     native_probe_error  TEXT,
     created_at       INTEGER NOT NULL DEFAULT (unixepoch()),
@@ -208,9 +244,19 @@ CREATE TABLE IF NOT EXISTS sync_entries (
     native_acked_deletion_version INTEGER NOT NULL DEFAULT 0,
     -- Independent edit events. Absent stays NULL: a missing timestamp must not
     -- become an invented edit time.
-    native_metadata_event TEXT CHECK (native_metadata_event IS NULL OR json_valid(native_metadata_event)),
-    native_content_event  TEXT CHECK (native_content_event IS NULL OR json_valid(native_content_event)),
-    native_deletion_event TEXT CHECK (native_deletion_event IS NULL OR json_valid(native_deletion_event)),
+    native_metadata_edited_ms INTEGER,
+    native_metadata_source TEXT,
+    native_metadata_event_id TEXT,
+    native_content_edited_ms INTEGER,
+    native_content_source TEXT,
+    native_content_event_id TEXT,
+    native_deletion_edited_ms INTEGER,
+    native_deletion_source TEXT,
+    native_deletion_event_id TEXT,
+    native_digest_entry_id INTEGER,
+    native_digest_version INTEGER,
+    native_digest_sha256 TEXT,
+    native_digest_size INTEGER,
     -- Stable remote identity. Never a path or a media_items id; an allocated id
     -- does not by itself prove a create happened.
     native_photo_id  TEXT,
@@ -219,15 +265,12 @@ CREATE TABLE IF NOT EXISTS sync_entries (
     native_master_revision TEXT,
     native_confirmed_generation TEXT,
     native_content_generation TEXT,
-    native_desired_metadata  TEXT CHECK (native_desired_metadata IS NULL OR json_valid(native_desired_metadata)),
-    native_baseline_metadata TEXT CHECK (native_baseline_metadata IS NULL OR json_valid(native_baseline_metadata)),
-    native_resource_baseline  TEXT CHECK (native_resource_baseline IS NULL OR json_valid(native_resource_baseline)),
-    native_pending_master TEXT CHECK (native_pending_master IS NULL OR json_valid(native_pending_master)),
-    native_pending_asset TEXT CHECK (native_pending_asset IS NULL OR json_valid(native_pending_asset)),
+    native_has_baseline INTEGER NOT NULL DEFAULT 0,
+    native_has_pending_master INTEGER NOT NULL DEFAULT 0,
+    native_has_pending_asset INTEGER NOT NULL DEFAULT 0,
     -- Versioned local digest, {entryId, localVersion, digest: {size, hex, base64}}.
     -- Valid only for that entry/version; local edits clear it. It exists
     -- so identity adoption hashes each file once, not once per receive cycle.
-    native_local_digest TEXT CHECK (native_local_digest IS NULL OR json_valid(native_local_digest)),
     updated_at           INTEGER NOT NULL DEFAULT (unixepoch()),
     UNIQUE(job_id, relative_path)
 );
@@ -247,7 +290,37 @@ CREATE TABLE IF NOT EXISTS sync_tasks (
     state              TEXT NOT NULL,
     config_generation  INTEGER NOT NULL,
     entry_generation   INTEGER NOT NULL,
-    native_capture     TEXT CHECK (native_capture IS NULL OR json_valid(native_capture)),
+    capture_present INTEGER NOT NULL DEFAULT 0,
+    capture_job INTEGER,
+    capture_entry INTEGER,
+    capture_config INTEGER,
+    capture_local_version INTEGER,
+    capture_metadata_version INTEGER,
+    capture_content_version INTEGER,
+    capture_deletion_version INTEGER,
+    capture_dirty INTEGER,
+    body_present INTEGER,
+    body_zone_kind INTEGER,
+    body_atomic_present INTEGER,
+    body_atomic INTEGER,
+    body_operations_kind INTEGER,
+    prep_present INTEGER,
+    prep_metadata_kind INTEGER,
+    prep_events_kind INTEGER,
+    prep_resources_kind INTEGER,
+    prep_send_present INTEGER,
+    prep_send_metadata INTEGER,
+    prep_asset_revision_present INTEGER,
+    prep_master_revision_present INTEGER,
+    capture_generation TEXT,
+    capture_phase TEXT,
+    capture_photo TEXT,
+    capture_master TEXT,
+    capture_content_generation TEXT,
+    body_zone_name TEXT,
+    body_zone_owner TEXT,
+    prep_asset_revision TEXT,
+    prep_master_revision TEXT,
     retry_count        INTEGER NOT NULL DEFAULT 0,
     retry_at           INTEGER,
     last_error         TEXT,
@@ -256,8 +329,8 @@ CREATE TABLE IF NOT EXISTS sync_tasks (
 );
 
 -- A conflict the user must resolve. Native candidates carry their category and
--- both competing event stamps in `native_detail`; the losing copy's ownership
--- is recorded there rather than as a second dirty truth.
+-- competing structured record versions; the recovery path is an ordinary
+-- column rather than a second dirty source.
 CREATE TABLE IF NOT EXISTS sync_conflicts (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id             INTEGER NOT NULL REFERENCES sync_jobs(id) ON DELETE CASCADE,
@@ -265,7 +338,10 @@ CREATE TABLE IF NOT EXISTS sync_conflicts (
     kind               TEXT NOT NULL,
     state              TEXT NOT NULL DEFAULT 'open',
     resolution         TEXT,
-    native_detail      TEXT CHECK (native_detail IS NULL OR json_valid(native_detail)),
+    native_detail_present INTEGER NOT NULL DEFAULT 0,
+    native_reason TEXT,
+    native_recovery_path TEXT,
+    native_remote_present INTEGER NOT NULL DEFAULT 0,
     created_at         INTEGER NOT NULL DEFAULT (unixepoch()),
     resolved_at        INTEGER
 );
@@ -293,13 +369,12 @@ CREATE TABLE IF NOT EXISTS sync_native_progress (
     snapshot_token      TEXT,
     -- Independent per-record-type bootstrap markers. One type or one page is
     -- never a complete inventory.
-    bootstrap_state     TEXT CHECK (bootstrap_state IS NULL OR json_valid(bootstrap_state)),
+    bootstrap_started INTEGER NOT NULL DEFAULT 0,
     discovery_token     TEXT,
     discovery_complete  INTEGER NOT NULL DEFAULT 0 CHECK (discovery_complete IN (0, 1)),
     ingest_token        TEXT,
     applied_token       TEXT,
     target_token        TEXT,
-    round_state         TEXT CHECK (round_state IS NULL OR json_valid(round_state)),
     updated_at          INTEGER NOT NULL DEFAULT (unixepoch()),
     PRIMARY KEY (job_id, zone_name, owner)
 );
@@ -335,9 +410,41 @@ CREATE TABLE IF NOT EXISTS sync_publications (
     original_asset_id TEXT,
     thumbnail_asset_id TEXT,
     state             TEXT NOT NULL DEFAULT 'pending',
-    role_state        TEXT CHECK (role_state IS NULL OR json_valid(role_state)),
-    captured_versions TEXT CHECK (captured_versions IS NULL OR json_valid(captured_versions)),
-    old_snapshot      TEXT CHECK (old_snapshot IS NULL OR json_valid(old_snapshot)),
+    capture_present INTEGER NOT NULL DEFAULT 0,
+    capture_projection_present INTEGER NOT NULL DEFAULT 0,
+    recovery_present INTEGER NOT NULL DEFAULT 0,
+    recovery_old_snapshot_path TEXT,
+    capture_job INTEGER,
+    capture_entry INTEGER,
+    capture_local_version INTEGER,
+    capture_config INTEGER,
+    capture_dirty INTEGER,
+    capture_photo TEXT,
+    capture_content_generation TEXT,
+    capture_preserve_metadata INTEGER,
+    capture_local_path TEXT,
+    capture_favorite INTEGER,
+    capture_taken_at INTEGER,
+    recovery_collision INTEGER,
+    recovery_source TEXT,
+    recovery_preserved TEXT,
+    recovery_root TEXT,
+    recovery_target TEXT,
+    recovery_new TEXT,
+    recovery_backup TEXT,
+    recovery_old_path TEXT,
+    recovery_sha256 TEXT,
+    recovery_size INTEGER,
+    recovery_had_old INTEGER,
+    recovery_stamp_0 INTEGER,
+    recovery_stamp_1 INTEGER,
+    recovery_stamp_2 INTEGER,
+    recovery_stamp_3 INTEGER,
+    recovery_stamp_4 INTEGER,
+    recovery_old_stamp_0 INTEGER,
+    recovery_old_stamp_1 INTEGER,
+    recovery_old_local_stamp_0 INTEGER,
+    recovery_old_local_stamp_1 INTEGER,
     original_staging  TEXT,
     thumbnail_staging TEXT,
     created_at        INTEGER NOT NULL DEFAULT (unixepoch()),
@@ -362,7 +469,10 @@ CREATE INDEX IF NOT EXISTS idx_sync_publications_job_state
 -- Accepted configuration edits must survive exit without mutating in-flight roots.
 CREATE TABLE IF NOT EXISTS sync_job_changes (
     job_id INTEGER PRIMARY KEY REFERENCES sync_jobs(id) ON DELETE CASCADE,
-    payload TEXT NOT NULL CHECK(json_valid(payload))
+    revision INTEGER NOT NULL DEFAULT 0,
+    desired_direction TEXT,
+    albums_changed INTEGER NOT NULL DEFAULT 0,
+    delete_requested INTEGER NOT NULL DEFAULT 0
 );
 
 -- Presentation uses declared file/thumbnail availability, never path probes.
@@ -373,3 +483,139 @@ WHERE m.storage_location<>2 OR (m.thumbnail_ready=1 AND EXISTS(
     JOIN sync_connections c ON c.id=j.connection_id
     WHERE e.media_id=m.id AND c.enabled=1 AND e.native_dirty<>4
 ));
+
+
+CREATE INDEX IF NOT EXISTS idx_sync_entries_native_master ON sync_entries(job_id,native_master_id) WHERE native_master_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sync_publications_photo ON sync_publications(job_id,photo_id,state);
+CREATE TRIGGER IF NOT EXISTS sync_entry_records_delete AFTER DELETE ON sync_entries
+BEGIN DELETE FROM sync_records WHERE owner_kind IN ('pending','baseline','baseline_metadata','desired_metadata') AND owner_key=CAST(OLD.id AS TEXT); END;
+CREATE INDEX IF NOT EXISTS idx_sync_connections_identity ON sync_connections(endpoint,native_tenant,native_user_id);
+CREATE TRIGGER IF NOT EXISTS sync_publication_records_delete AFTER DELETE ON sync_publications
+BEGIN DELETE FROM sync_records WHERE owner_kind='publication' AND owner_key=OLD.publication_id; END;
+CREATE TRIGGER IF NOT EXISTS sync_conflict_records_delete AFTER DELETE ON sync_conflicts
+BEGIN DELETE FROM sync_records WHERE owner_kind='conflict' AND owner_key=CAST(OLD.id AS TEXT); END;
+CREATE INDEX IF NOT EXISTS idx_sync_tasks_photo ON sync_tasks(job_id,capture_photo);
+CREATE TRIGGER IF NOT EXISTS sync_task_records_delete AFTER DELETE ON sync_tasks
+BEGIN DELETE FROM sync_records WHERE (owner_kind IN ('issued','preparation') AND owner_key=OLD.operation_id) OR (owner_kind='prepared_asset' AND owner_key IN (OLD.operation_id||':original',OLD.operation_id||':thumbnail')); END;
+CREATE INDEX IF NOT EXISTS idx_sync_connections_account ON sync_connections(native_account_id);
+CREATE TRIGGER IF NOT EXISTS sync_connection_account_delete AFTER DELETE ON sync_connections
+BEGIN DELETE FROM sync_accounts WHERE id=OLD.native_account_id AND NOT EXISTS(SELECT 1 FROM sync_connections WHERE native_account_id=OLD.native_account_id); END;
+-- Typed native record fragments, baseline pairs and issued request records.
+-- Records are scoped by their owning state, never a second cloud inventory.
+CREATE TABLE IF NOT EXISTS sync_records (
+    id INTEGER PRIMARY KEY,
+    owner_kind TEXT NOT NULL,
+    owner_key TEXT NOT NULL,
+    job_id INTEGER NOT NULL REFERENCES sync_jobs(id) ON DELETE CASCADE,
+    entry_id INTEGER REFERENCES sync_entries(id) ON DELETE SET NULL,
+    position INTEGER NOT NULL,
+    operation_type TEXT,
+    record_name TEXT NOT NULL,
+    record_type TEXT,
+    record_revision TEXT,
+    photo_id TEXT,
+    master_id TEXT,
+    relative_path TEXT,
+    content_generation TEXT,
+    zone_name TEXT,
+    zone_owner TEXT,
+    deleted INTEGER NOT NULL DEFAULT 0,
+    record_shape INTEGER NOT NULL DEFAULT 127,
+    event_shape INTEGER NOT NULL DEFAULT 7,
+    fields_present INTEGER NOT NULL DEFAULT 0,
+    events_present INTEGER NOT NULL DEFAULT 0,
+    metadata_edited_ms INTEGER,
+    metadata_source TEXT,
+    metadata_event_id TEXT,
+    content_edited_ms INTEGER,
+    content_source TEXT,
+    content_event_id TEXT,
+    deletion_edited_ms INTEGER,
+    deletion_source TEXT,
+    deletion_event_id TEXT,
+    UNIQUE(owner_kind,owner_key,position)
+);
+CREATE INDEX IF NOT EXISTS idx_sync_records_identity ON sync_records(job_id,owner_kind,record_name);
+CREATE INDEX IF NOT EXISTS idx_sync_records_photo ON sync_records(job_id,owner_kind,photo_id);
+CREATE INDEX IF NOT EXISTS idx_sync_records_master ON sync_records(job_id,owner_kind,master_id);
+CREATE INDEX IF NOT EXISTS idx_sync_records_entry ON sync_records(entry_id,owner_kind);
+
+
+CREATE TABLE IF NOT EXISTS sync_record_fields (
+    record_id INTEGER NOT NULL REFERENCES sync_records(id) ON DELETE CASCADE,
+    field_name TEXT NOT NULL,
+    field_type TEXT,
+    field_present INTEGER NOT NULL,
+    value_present INTEGER NOT NULL,
+    value_kind TEXT NOT NULL,
+    text_value TEXT,
+    integer_value INTEGER,
+    real_value REAL,
+    reference_name TEXT,
+    reference_action TEXT,
+    asset_id TEXT,
+    asset_checksum TEXT,
+    asset_size INTEGER,
+    asset_mime TEXT,
+    asset_width INTEGER,
+    asset_height INTEGER,
+    checksum_algorithm TEXT,
+    PRIMARY KEY(record_id,field_name)
+);
+CREATE INDEX IF NOT EXISTS idx_sync_record_fields_asset ON sync_record_fields(asset_id) WHERE asset_id IS NOT NULL;
+
+
+
+CREATE TABLE IF NOT EXISTS sync_connection_zones (
+    connection_id INTEGER NOT NULL REFERENCES sync_connections(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    zone_name TEXT NOT NULL,
+    PRIMARY KEY(connection_id,position)
+);
+CREATE INDEX IF NOT EXISTS idx_sync_connection_zones_name ON sync_connection_zones(connection_id,zone_name);
+CREATE TABLE IF NOT EXISTS sync_bootstrap_types (
+    job_id INTEGER NOT NULL REFERENCES sync_jobs(id) ON DELETE CASCADE,
+    record_type TEXT NOT NULL,
+    complete INTEGER NOT NULL DEFAULT 0,
+    continuation_marker TEXT,
+    record_count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(job_id,record_type)
+);
+CREATE TABLE IF NOT EXISTS sync_job_change_albums (
+    job_id INTEGER NOT NULL REFERENCES sync_job_changes(job_id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    relative_album TEXT NOT NULL,
+    PRIMARY KEY(job_id,position)
+);
+
+
+
+
+CREATE TABLE IF NOT EXISTS sync_task_resources (
+    task_id INTEGER NOT NULL REFERENCES sync_tasks(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    document_present INTEGER NOT NULL,
+    member_mask INTEGER NOT NULL,
+    source_path TEXT,
+    digest_sha256 TEXT,
+    digest_base64 TEXT,
+    digest_size INTEGER,
+    session_id TEXT,
+    asset_kind INTEGER NOT NULL,
+    PRIMARY KEY(task_id,role)
+);
+
+CREATE TABLE IF NOT EXISTS sync_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    public_base_url TEXT NOT NULL,
+    tenant TEXT NOT NULL,
+    user_id TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_accounts_user ON sync_accounts(public_base_url,tenant,user_id) WHERE user_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_accounts_legacy ON sync_accounts(public_base_url,tenant) WHERE user_id IS NULL;
+
+CREATE TABLE IF NOT EXISTS sync_reset_state (
+    id INTEGER PRIMARY KEY CHECK(id=1),
+    token TEXT NOT NULL,
+    last_error TEXT
+);

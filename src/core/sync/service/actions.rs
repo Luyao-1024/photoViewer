@@ -24,7 +24,7 @@ impl SyncService {
                 std::fs::create_dir_all(&directory)?;
                 if matches!(action, PhotoAction::KeepLocal) {
                     let conn=service.pool().get()?;
-                    let mut statement=conn.prepare("SELECT r.staging_path,r.role FROM sync_native_resources r JOIN sync_conflicts f ON f.job_id=r.job_id AND ((r.asset_id=json_extract(f.native_detail,'$.remote.original.assetId') AND r.role='original') OR (r.asset_id=json_extract(f.native_detail,'$.remote.thumbnail.assetId') AND r.role='thumbnail')) WHERE f.entry_id=?1 AND f.state='open' AND r.state='staged'")?;
+                    let mut statement=conn.prepare("SELECT r.staging_path,r.role FROM sync_native_resources r JOIN sync_conflicts f ON f.job_id=r.job_id JOIN sync_records cr ON cr.owner_kind='conflict' AND cr.owner_key=CAST(f.id AS TEXT) JOIN sync_record_fields cf ON cf.record_id=cr.id AND cf.asset_id=r.asset_id AND ((cf.field_name='resOriginalRes' AND r.role='original') OR (cf.field_name='resJPEGThumbRes' AND r.role='thumbnail')) WHERE f.entry_id=?1 AND f.state='open' AND r.state='staged'")?;
                     let paths=statement.query_map([captured.entry_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
                     for (source,role) in paths { let target=directory.join(format!("cloud-{role}"));std::fs::copy(source,&target)?;std::fs::File::open(&target)?.sync_all()?; }
                 }
@@ -41,8 +41,9 @@ impl SyncService {
                 std::fs::File::open(&target)?.sync_all()?;
                 }
                 let metadata=service.pool().get()?.query_row("SELECT m.is_favorite,m.taken_at FROM sync_entries e JOIN media_items m ON m.id=e.media_id WHERE e.id=?1",[captured.entry_id],|r|Ok((r.get::<_,bool>(0)?,r.get::<_,Option<i64>>(1)?))).ok();
-                std::fs::write(directory.join("decision.json"), serde_json::json!({"job":job,"entry":captured.entry_id,"path":captured.relative_path,"version":captured.local_version,"localMetadata":metadata.map(|(favorite,date)|serde_json::json!({"favorite":favorite,"takenAt":date})),"conflict":captured.conflict}).to_string())?;
-                std::fs::File::open(directory.join("decision.json"))?.sync_all()?;
+                let note=format!("PhotoViewer recovery copy\nJob: {job}\nEntry: {}\nLocal version: {}\nOriginal relative path: {}\nFavorite: {:?}\nTaken at: {:?}\n",captured.entry_id,captured.local_version,captured.relative_path,metadata.map(|m|m.0),metadata.and_then(|m|m.1));
+                std::fs::write(directory.join("README.txt"),note)?;
+                std::fs::File::open(directory.join("README.txt"))?.sync_all()?;
                 std::fs::File::open(&directory)?.sync_all()?;
                 Some(directory)
             } else if matches!(action, PhotoAction::UseCloud) { Some(service.staging_root().to_path_buf()) } else { None };

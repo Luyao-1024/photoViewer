@@ -355,13 +355,8 @@ impl SyncService {
         }
         verify_descriptor(original, &photo.original)?;
         verify_descriptor(thumbnail, &photo.thumbnail)?;
-        let capture: String = self.pool().get()?.query_row(
-            "SELECT captured_versions FROM sync_publications WHERE publication_id=?1",
-            [id],
-            |r| r.get(0),
-        )?;
-        let capture: Value =
-            serde_json::from_str(&capture).map_err(|_| error("invalid publication capture"))?;
+        let capture = super::super::store::recovery::capture(&*self.pool().get()?, id)?
+            .ok_or_else(|| error("missing publication capture"))?;
         let relative = if capture["preserveMetadata"] == true {
             capture["localRelativePath"]
                 .as_str()
@@ -391,9 +386,9 @@ impl SyncService {
             return Err(error("publication target is not an owned regular file"));
         }
         let conn = self.pool().get()?;
-        let (baseline,old_path):(Option<String>,Option<String>)=conn.query_row("SELECT e.native_resource_baseline,m.path FROM sync_entries e LEFT JOIN media_items m ON m.id=e.media_id WHERE e.job_id=?1 AND e.native_photo_id=?2",rusqlite::params![job,photo.photo_id],|r|Ok((r.get(0)?,r.get(1)?)))?;
+        let (baseline,old_path):(bool,Option<String>)=conn.query_row("SELECT e.native_has_baseline,m.path FROM sync_entries e LEFT JOIN media_items m ON m.id=e.media_id WHERE e.job_id=?1 AND e.native_photo_id=?2",rusqlite::params![job,photo.photo_id],|r|Ok((r.get(0)?,r.get(1)?)))?;
         drop(conn);
-        if old.is_some() && (baseline.is_none() || old_path.as_deref() != target.to_str()) {
+        if old.is_some() && (!baseline || old_path.as_deref() != target.to_str()) {
             let _ = std::fs::remove_file(&next);
             return Err(error("an unowned local file occupies the remote path"));
         }
@@ -473,7 +468,7 @@ impl SyncService {
     pub(super) fn recover_publications(&self, job: i64) -> Result<()> {
         let conn = self.pool().get()?;
         let rows = {
-            let mut statement=conn.prepare("SELECT publication_id,role_state,state FROM sync_publications WHERE job_id=?1 AND role_state IS NOT NULL AND state IN ('publishing','complete')")?;
+            let mut statement=conn.prepare("SELECT publication_id,publication_id,state FROM sync_publications WHERE job_id=?1 AND recovery_present=1 AND state IN ('publishing','complete')")?;
             let rows = statement
                 .query_map([job], |r| {
                     Ok((
@@ -488,8 +483,8 @@ impl SyncService {
         drop(conn);
         let _publication = super::super::publication_io::write()?;
         for (id, encoded, state) in rows {
-            let details: Value = serde_json::from_str(&encoded)
-                .map_err(|_| error("invalid publication recovery intent"))?;
+            let details = super::super::store::recovery::details(&*self.pool().get()?, &encoded)?
+                .ok_or_else(|| error("missing publication recovery details"))?;
             let value = |field: &str| -> Result<PathBuf> {
                 details[field]
                     .as_str()

@@ -24,7 +24,7 @@ pub(super) mod collisions;
 
 /// What one cycle accomplished. `applied` stays false for the whole of C1.2,
 /// because promotion always materializes resource work that C1.4 settles.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReceiveReport {
     pub job_id: i64,
     pub bootstrapped: bool,
@@ -56,7 +56,41 @@ pub enum ReceiveError {
     Transport(String),
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PageTiming {
+    pub saved: usize,
+    pub persist_ms: u64,
+    pub apply_ms: u64,
+}
+
 impl SyncService {
+    pub(crate) async fn apply_native_bootstrap_page(
+        &self,
+        job: i64,
+        zone: &NativeZone,
+        record_type: &str,
+        records: &[NativeRecord],
+        token: &str,
+        report: &mut ReceiveReport,
+    ) -> std::result::Result<PageTiming, ReceiveError> {
+        let started = Instant::now();
+        let saved = self
+            .store
+            .save_delta_page(job, inbox_events(records), token)
+            .map_err(|e| ReceiveError::Transport(e.to_string()))?;
+        report.events_saved += saved;
+        let persist_ms = started.elapsed().as_millis() as u64;
+        let started = Instant::now();
+        if record_type == "CPLAsset" {
+            self.promote_pending(job, zone, token, report).await?;
+        }
+        Ok(PageTiming {
+            saved,
+            persist_ms,
+            apply_ms: started.elapsed().as_millis() as u64,
+        })
+    }
+
     /// Run one receive cycle for a native job.
     ///
     /// The cycle is idempotent: rerunning it after a failure resumes from the
@@ -237,19 +271,19 @@ impl SyncService {
                 // advances. A crash between the two replays this page; the
                 // reverse order would advance the marker over records that were
                 // never stored.
-                let saved = self
-                    .store
-                    .save_delta_page(
+                let http_ms = started.elapsed().as_millis() as u64;
+                let timing = self
+                    .apply_native_bootstrap_page(
                         progress.job_id,
-                        inbox_events(&page.records),
+                        zone,
+                        record_type,
+                        &page.records,
                         &page.sync_token,
+                        report,
                     )
-                    .map_err(|error| ReceiveError::Transport(error.to_string()))?;
-                report.events_saved += saved;
-                if record_type == "CPLAsset" {
-                    self.promote_pending(progress.job_id, zone, &page.sync_token, report)
-                        .await?;
-                }
+                    .await?;
+                let saved = timing.saved;
+                let checkpoint = Instant::now();
                 self.store
                     .save_bootstrap_page(
                         progress.job_id,
@@ -259,6 +293,7 @@ impl SyncService {
                         page.sync_token.as_str(),
                     )
                     .map_err(|error| ReceiveError::Transport(error.to_string()))?;
+                let checkpoint_ms = checkpoint.elapsed().as_millis() as u64;
                 report.pages_received += 1;
                 tracing::info!(
                     target: crate::core::log_targets::SYNC,
@@ -266,6 +301,7 @@ impl SyncService {
                     record_type, page = report.pages_received,
                     received = page.records.len(), saved, more_coming = !finished,
                     elapsed_ms = started.elapsed().as_millis() as u64,
+                    http_ms,persist_ms=timing.persist_ms,apply_ms=timing.apply_ms,checkpoint_ms,
                     "云同步全量数据批次已保存"
                 );
                 if finished {
@@ -428,7 +464,12 @@ impl SyncService {
         job_id: i64,
         graph: &RemoteGraph,
     ) -> HashMap<String, LocalDigest> {
-        let entries = match self.store().local_entries(job_id) {
+        let paths = graph
+            .photos
+            .iter()
+            .map(|photo| photo.relative_path.clone())
+            .collect::<Vec<_>>();
+        let entries = match self.store().local_entries_for_paths(job_id, &paths) {
             Ok(entries) => entries,
             Err(error) => {
                 tracing::warn!("cannot list unclaimed local entries: {error}");

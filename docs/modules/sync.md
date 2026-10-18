@@ -54,10 +54,18 @@ Protocol definitions remain exclusively in the sibling server repository.
 | [Storage/publication](native-sync-storage.md) | actor/migration, dirty/version facts, receive progress, publication |
 | [Implementation/acceptance](native-sync-plan.md) | C1.1–C1.6 patch order and NC01–NC20 evidence |
 
+## Relational persistence and batch timing
+
+Cloud-sync tables contain scalar columns and typed relations, including pending records, confirmed baselines, account capabilities, drafts and recovery evidence. The one-time legacy conversion preserves unfinished obligations and exact issued requests; [storage rules and indexes](native-sync-relational.md) describe the boundary. A 100-record batch targets one second from HTTP request through local application and progress checkpoint. Page logs expose HTTP, persistence, application and checkpoint time separately.
+
 ## Key Files
 
 | File | Owns |
 |---|---|
+| `src/core/sync/store/records.rs` | typed record headers, field values, baselines and versioned digest/event storage |
+| `src/core/sync/store/state.rs` | scalar capabilities/accounts, bootstrap markers, configuration drafts and legacy conversion |
+| `src/core/sync/store/issued.rs` | lossless issued request/preparation reconstruction |
+| `src/core/sync/store/recovery.rs` | structured conflict and file-publication recovery state |
 | `src/core/sync/native/protocol.rs` | typed DTOs, endpoint normalization, capability validation, `NativeClient` HTTP (readyz/capabilities/probe), CloudKit base building, error envelope parsing |
 | `src/core/sync/native/lease.rs` | the exclusive upload lease: acquire/check/phase/renew/release and the conservative monotonic deadline |
 | `src/core/sync/native/modify.rs` | record mutations, idempotency keys, and issued-operation receipts |

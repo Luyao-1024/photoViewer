@@ -136,7 +136,12 @@ impl SyncService {
             .iter()
             .map(|photo| photo.photo_id.as_str())
             .collect();
-        for entry in service.store().local_entries(job)? {
+        let paths = graph
+            .photos
+            .iter()
+            .map(|photo| photo.relative_path.clone())
+            .collect::<Vec<_>>();
+        for entry in service.store().local_entries_for_paths(job, &paths)? {
             let Some(photo) = by_path.get(entry.relative_path.as_str()) else {
                 continue;
             };

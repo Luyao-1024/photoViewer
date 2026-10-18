@@ -134,7 +134,7 @@ async fn single_account_switch_drains_old_runs_before_admitting_the_new_account(
         .contains("inactive"));
     // An old publication that cannot be safely settled rejects the switch.
     reopened.pool().get().unwrap().execute(
-        "INSERT INTO sync_publications(publication_id,job_id,state,role_state) VALUES('broken-old-publication',?1,'publishing','{}')", [b.id]
+        "INSERT INTO sync_publications(publication_id,job_id,state,recovery_present) VALUES('broken-old-publication',?1,'publishing',1)", [b.id]
     ).unwrap();
     assert!(reopened.activate_native_account(a.id).await.is_err());
     assert!(reopened.store().job_is_selected(b.id).unwrap());
