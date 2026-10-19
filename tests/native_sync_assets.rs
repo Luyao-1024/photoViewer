@@ -36,6 +36,10 @@ use photo_viewer::core::sync::{
 };
 use serde_json::json;
 
+// These integration tests share the Sandbox preference file. Serialize its
+// read-modify-write changes so trash-backend setup cannot overwrite Sync On.
+static PREFERENCES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn server_binary() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("SYNC_SERVER_BIN") {
         let path = PathBuf::from(path);
@@ -1414,6 +1418,7 @@ fn uplink_batches_limit_assets_to_5_and_metadata_to_20_and_resume() {
 #[test]
 fn successful_batches_chain_immediately_while_work_remains() {
     let sandbox = photo_viewer::testing::Sandbox::install();
+    let _preferences = PREFERENCES.lock().unwrap();
     photo_viewer::core::prefs::set_sync_enabled(true).unwrap();
     let Some(server) = Server::start() else {
         return skip();
@@ -1498,7 +1503,10 @@ fn successful_batches_chain_immediately_while_work_remains() {
             }
             assert!(
                 Instant::now() < deadline,
-                "seven photos must drain through two immediate batches: {}",
+                "seven photos must drain through two immediate batches: enabled={}, pending={}, job={:?}; logs: {}",
+                photo_viewer::core::prefs::sync_enabled(),
+                service.has_pending_work(job.id).unwrap(),
+                service.store().get_job(job.id).unwrap(),
                 logs.text()
             );
             tokio::time::sleep(Duration::from_millis(50)).await;

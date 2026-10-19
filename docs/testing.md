@@ -191,6 +191,12 @@ target/ux-fixtures/run-<pid>/
 
 ### The sandbox
 
+Tests in one process share its settings file. Native asset tests that change
+the sync switch or trash backend hold the same preference mutex across their
+journey; concurrent read-modify-write setup must not drop the other test's
+preference and silently prevent scheduler admission.
+
+
 `src/testing.rs` redirects `HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
 `XDG_CACHE_HOME` and `TMPDIR` at `target/ux-fixtures/sandbox-<pid>/`, so a test
 run neither reads the developer's preferences nor rewrites them. Without it a

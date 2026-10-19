@@ -4,6 +4,7 @@ use super::*;
 #[test]
 fn permanent_deletion_survives_failure_and_reopen_until_cloud_confirmation() {
     let sandbox = photo_viewer::testing::Sandbox::install();
+    let _preferences = PREFERENCES.lock().unwrap();
     photo_viewer::core::prefs::set_trash_backend(photo_viewer::core::prefs::TrashBackend::App)
         .unwrap();
     let Some(server) = Server::start() else {
