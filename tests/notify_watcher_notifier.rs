@@ -70,6 +70,7 @@ fn event_references_uri(event: &DomainEvent, uri: &str) -> bool {
         | DomainEvent::ThumbnailStatsDirty
         | DomainEvent::LiveCountDirty
         | DomainEvent::SyncStateDirty
+        | DomainEvent::SyncConfigurationDirty
         | DomainEvent::ScanPhase { .. } => false,
     }
 }

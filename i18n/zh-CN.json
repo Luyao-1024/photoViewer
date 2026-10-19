@@ -420,7 +420,7 @@
   "native.disable": "关闭同步",
   "native.worker_failed": "同步操作未能完成，请重试。",
   "native.paused": "已暂停",
-  "native.automatic": "每 15 秒自动检查；也可下拉照片页同步",
+  "native.automatic": "本地变更停止 10 秒后自动同步；也可下拉照片页同步",
   "native.albums": "上传相册",
   "native.pause": "暂停",
   "native.resume": "继续",

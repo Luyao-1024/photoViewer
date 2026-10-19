@@ -45,6 +45,11 @@ fn native_settings_probe_drafts_and_scope_use_real_controls() {
     // Cloud sync content lives directly in its Settings category.
     let page = named::<gtk::Box>(&shell.window, "native-sync-content");
     assert!(ui.wait_until(Duration::from_secs(3), || page.is_mapped()));
+    assert!(descendants::<adw::PreferencesGroup>(&page)
+        .iter()
+        .any(|group| group.description().as_deref()
+            == Some(photo_viewer::core::i18n::tr("native.automatic").as_str())));
+
     let enabled = named::<gtk::Switch>(&shell.window, "native-sync-enabled");
     Ui::for_widget(&enabled).scroll_to_reveal(&enabled, "Enable cloud sync");
     Ui::for_widget(&enabled).click_native(&enabled, "Enable cloud sync without navigating");

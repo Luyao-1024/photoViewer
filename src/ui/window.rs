@@ -324,6 +324,8 @@ mod imp {
         /// dialog from being repositioned by its parent window's resize.
         pub deferred_day_grid_columns: Cell<Option<usize>>,
         pub settings_dialog: RefCell<Option<adw::Dialog>>,
+        /// Invalidate the native settings snapshot on a synchronization event.
+        pub native_sync_refresh: RefCell<Option<std::rc::Rc<dyn Fn(bool)>>>,
         #[template_child]
         pub root_overlay: TemplateChild<gtk::Overlay>,
         #[template_child]
@@ -1019,6 +1021,38 @@ impl MainWindow {
             grid.end_sync_item_update();
         }
         true
+    }
+
+    /// Apply a sync domain event to its overview, settings and cloud badges.
+    pub fn refresh_sync_state(&self) {
+        if let Some(refresh) = self.imp().native_sync_refresh.borrow().as_ref() {
+            refresh(true);
+        }
+        if let Some(photos) = self
+            .browsing_stack()
+            .child_by_name("photos")
+            .and_downcast::<PhotosPage>()
+        {
+            photos.refresh_overview_async(true);
+        }
+        self.refresh_cloud_badges();
+    }
+
+    /// Update task controls without querying unchanged synchronization counts.
+    pub fn refresh_sync_configuration(&self) {
+        if let Some(refresh) = self.imp().native_sync_refresh.borrow().as_ref() {
+            refresh(false);
+        }
+    }
+
+    pub fn refresh_library_counts(&self) {
+        if let Some(photos) = self
+            .browsing_stack()
+            .child_by_name("photos")
+            .and_downcast::<PhotosPage>()
+        {
+            photos.refresh_overview_async(false);
+        }
     }
 
     pub(crate) fn refresh_cloud_badges(&self) {

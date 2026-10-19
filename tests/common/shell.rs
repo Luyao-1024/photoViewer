@@ -577,6 +577,33 @@ fn build_with_events(photo_count: usize, repeat_fixtures: bool, capture_events: 
          breakpoints. Start the display with `xvfb-run -a -s \"-screen 0 1920x1080x24\"`."
     );
 
+    // Match production's sync-event delivery. Explicit event-capture journeys
+    // keep their receiver; ordinary shells no longer rely on UI polling.
+    let db_events = if capture_events {
+        Some(std::cell::RefCell::new(event_rx))
+    } else {
+        let mut event_rx = event_rx;
+        let weak = window.downgrade();
+        glib::spawn_future_local(async move {
+            while let Some(event) = event_rx.recv().await {
+                let Some(window) = weak.upgrade() else {
+                    break;
+                };
+                match event {
+                    photo_viewer::core::DomainEvent::SyncStateDirty => window.refresh_sync_state(),
+                    photo_viewer::core::DomainEvent::SyncConfigurationDirty => {
+                        window.refresh_sync_configuration()
+                    }
+                    photo_viewer::core::DomainEvent::LiveCountDirty => {
+                        window.refresh_library_counts()
+                    }
+                    _ => {}
+                }
+            }
+        });
+        None
+    };
+
     Shell {
         app,
         tmp,
@@ -584,7 +611,7 @@ fn build_with_events(photo_count: usize, repeat_fixtures: bool, capture_events: 
         loader,
         media_list,
         db_actor,
-        db_events: capture_events.then(|| std::cell::RefCell::new(event_rx)),
+        db_events,
         items,
         window,
         photos,

@@ -52,9 +52,8 @@ struct PhotosOverviewSnapshot {
     photos: u32,
     videos: u32,
     /// Every live media, i.e. what 全选 can actually reach. The select-all limit
-    /// used to run its own COUNT on each `selection-changed` tick; this worker
-    /// already runs off the main thread every two seconds, so the number comes
-    /// from here instead (P2-5).
+    /// used to run its own COUNT on each `selection-changed` tick; the worker
+    /// now refreshes it on actual library changes, off the main thread.
     live_total: u32,
     sync: SyncOverview,
 }
@@ -295,6 +294,9 @@ mod imp {
         /// or race with viewer-level back handling during the transition.
         pub viewer_open_pending: Cell<bool>,
         pub overview_refresh_in_flight: Cell<bool>,
+        pub overview_refresh_requested: Cell<bool>,
+        pub overview_sync_refresh_requested: Cell<bool>,
+        pub overview_last_sync: Cell<Option<SyncOverview>>,
         /// Live-media total, refreshed by the overview worker. It only decides
         /// 全选 vs 取消全选, and reading it on a `selection-changed` tick used to
         /// mean a synchronous COUNT on the main thread (P2-5).
@@ -308,7 +310,6 @@ mod imp {
         /// handler decides from this rather than querying again.
         pub selection_favorite_state: Cell<FavoriteMenuState>,
         pub select_all_in_flight: Cell<bool>,
-        pub overview_poll_source: RefCell<Option<glib::SourceId>>,
         pub overview_sync_running: Cell<bool>,
         pub overview_sync_tick_active: Cell<bool>,
         pub overview_sync_started_at: Cell<Option<std::time::Instant>>,
@@ -402,12 +403,14 @@ mod imp {
                 scan_retry_in_flight: Cell::new(false),
                 viewer_open_pending: Cell::new(false),
                 overview_refresh_in_flight: Cell::new(false),
+                overview_refresh_requested: Cell::new(false),
+                overview_sync_refresh_requested: Cell::new(false),
+                overview_last_sync: Cell::new(None),
                 live_total: Cell::new(None),
                 selection_generation: Cell::new(0),
                 favorite_state_in_flight: Cell::new(false),
                 selection_favorite_state: Cell::new(FavoriteMenuState::default()),
                 select_all_in_flight: Cell::new(false),
-                overview_poll_source: RefCell::new(None),
                 overview_sync_running: Cell::new(false),
                 overview_sync_tick_active: Cell::new(false),
                 overview_sync_started_at: Cell::new(None),
@@ -466,14 +469,6 @@ mod imp {
 
     impl ObjectImpl for PhotosPage {
         fn dispose(&self) {
-            if let Some(source) = self.overview_poll_source.borrow_mut().take() {
-                if glib::MainContext::default()
-                    .find_source_by_id(&source)
-                    .is_some()
-                {
-                    source.remove();
-                }
-            }
             if let Some(popover) = self.favorite_popover.borrow_mut().take() {
                 popover.unparent();
             }
@@ -1026,7 +1021,7 @@ impl PhotosPage {
     /// access to the database. Mirrors `set_nav_target`.
     pub fn set_db_pool(&self, pool: DbPool) {
         *self.imp().pool.borrow_mut() = Some(pool);
-        self.start_overview_updates();
+        self.refresh_overview_async(true);
     }
 
     pub fn set_db_actor(&self, db_actor: DbActorHandle) {
@@ -1138,26 +1133,17 @@ impl PhotosPage {
         self.imp().media_list.borrow()
     }
 
-    fn start_overview_updates(&self) {
-        self.refresh_overview_async();
-        if self.imp().overview_poll_source.borrow().is_some() {
-            return;
+    pub(crate) fn refresh_overview_async(&self, refresh_sync: bool) {
+        self.imp().overview_refresh_requested.set(true);
+        if refresh_sync {
+            self.imp().overview_sync_refresh_requested.set(true);
         }
-        let weak = self.downgrade();
-        let source = glib::timeout_add_local(Duration::from_secs(2), move || {
-            let Some(this) = weak.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
-            this.refresh_overview_async();
-            glib::ControlFlow::Continue
-        });
-        *self.imp().overview_poll_source.borrow_mut() = Some(source);
-    }
-
-    fn refresh_overview_async(&self) {
         if self.imp().overview_refresh_in_flight.replace(true) {
             return;
         }
+        self.imp().overview_refresh_requested.set(false);
+        let refresh_sync = self.imp().overview_sync_refresh_requested.replace(false);
+        let cached_sync = self.imp().overview_last_sync.get();
         let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
             self.imp().overview_refresh_in_flight.set(false);
             return;
@@ -1170,7 +1156,10 @@ impl PhotosPage {
                     photos: repository.count(MediaQuery::Images)?,
                     videos: repository.count(MediaQuery::Videos)?,
                     live_total: repository.count(MediaQuery::LiveAll)?,
-                    sync: SyncStore::new(pool).overview()?,
+                    sync: match (refresh_sync, cached_sync) {
+                        (false, Some(cached)) => cached,
+                        _ => SyncStore::new(pool).overview()?,
+                    },
                 })
             })
             .await;
@@ -1189,6 +1178,11 @@ impl PhotosPage {
                     this.apply_overview_error();
                 }
             }
+            if this.imp().overview_refresh_requested.get()
+                || this.imp().overview_sync_refresh_requested.get()
+            {
+                this.refresh_overview_async(false);
+            }
         });
     }
 
@@ -1199,6 +1193,7 @@ impl PhotosPage {
             live_total,
             sync,
         } = snapshot;
+        self.imp().overview_last_sync.set(Some(sync));
         // The select-all label asks "is everything reachable already selected?",
         // which needs this number; it arrives asynchronously now, so re-run the
         // chrome once when a selection was waiting on it.

@@ -5,6 +5,7 @@ use crate::core::sync::{
     SyncService,
 };
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 fn button(key: &str, name: &str) -> gtk::Button {
@@ -85,14 +86,17 @@ impl MainWindow {
         let parent_enabled = parent.clone();
         let service_enabled = service.clone();
         let status_enabled = status.clone();
-        enabled.connect_active_notify(move |switch| {
+        // Handle the state request before GTK commits it. Reverting `active`
+        // from its own notify handler queues another notify after the guard has
+        // been released, which can repeatedly persist/restart synchronization.
+        enabled.connect_state_set(move |switch, value| {
             if changing.get() {
-                return;
+                return glib::Propagation::Stop;
             }
-            let value = switch.is_active();
             if !value {
                 // The switch is a draft until the destructive history reset is confirmed.
                 changing.set(true);
+                switch.set_state(true);
                 switch.set_active(true);
                 changing.set(false);
                 let dialog = adw::AlertDialog::builder()
@@ -109,14 +113,20 @@ impl MainWindow {
                 let status = status_enabled.clone();
                 dialog.connect_response(Some("disable"), move |_, _| {
                     changing.set(true);
+                    switch.set_state(false);
                     switch.set_active(false);
                     changing.set(false);
                     set_enabled(service.clone(), false, &status);
                 });
                 dialog.present(&parent_enabled);
             } else {
+                changing.set(true);
+                switch.set_state(true);
+                switch.set_active(true);
+                changing.set(false);
                 set_enabled(service_enabled.clone(), true, &status_enabled);
             }
+            glib::Propagation::Stop
         });
         content.append(&self.build_native_sync_content(parent, service));
     }
@@ -209,83 +219,171 @@ impl MainWindow {
         });
         let weak_content = content.downgrade();
         let parent = parent.downgrade();
-        let mut cards = std::collections::BTreeMap::<i64, JobCard>::new();
+        let mut cards = BTreeMap::<i64, JobCard>::new();
         let mut shown_account = None;
-        // Update existing widgets so background progress never collapses details,
-        // closes an open action menu, or discards keyboard focus.
-        let refresh = move || {
-            let Some(content) = weak_content.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
-            let Some(parent) = parent.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
-            if !content.is_mapped() {
-                return glib::ControlFlow::Continue;
-            }
-            match (service.store().list_jobs(), service.store().overview()) {
-                (Ok(list), Ok(overview)) => {
-                    let current = list.first().map(|job| job.id);
-                    if shown_account != current {
-                        while let Some(child) = account_box.first_child() {
-                            account_box.remove(&child);
-                        }
-                        if let Some(job) = list.first() {
-                            append_account(&account_box, &parent, &service, job, &status);
-                        }
-                        shown_account = current;
-                    }
-                    add.set_visible(list.is_empty());
-                    title.set_visible(!list.is_empty());
-                    let enabled = prefs::sync_enabled();
-                    overview_row.set_title(&trf(
-                        "native.progress",
-                        &[
-                            ("done", &overview.synced_items.to_string()),
-                            ("total", &overview.total_items.to_string()),
-                        ],
-                    ));
-                    let summary = if overview.conflict_images > 0 {
-                        trf(
-                            "native.conflicts",
-                            &[("count", &overview.conflict_images.to_string())],
-                        )
-                    } else {
-                        tr(if enabled {
-                            "native.up_to_date_hint"
-                        } else {
-                            "native.disabled"
-                        })
-                    };
-                    overview_row.set_subtitle(&summary);
-                    if overview.conflict_images > 0 {
-                        overview_row.add_css_class("warning");
-                    } else {
-                        overview_row.remove_css_class("warning");
-                    }
-                    group.set_visible(!list.is_empty());
-                    empty_group.set_visible(list.is_empty());
-                    sync.set_sensitive(enabled && list.iter().any(|job| !job.paused));
-                    empty.set_visible(list.is_empty());
-                    cards.retain(|id, card| {
-                        let keep = list.iter().any(|job| job.id == *id);
-                        if !keep {
-                            jobs.remove(&card.group);
-                        }
-                        keep
-                    });
-                    for job in list {
-                        let card = cards
-                            .entry(job.id)
-                            .or_insert_with(|| append_job(&jobs, &parent, &service, &job, &status));
-                        card.refresh(&service, &job);
-                    }
+        // The map signal loads once; domain changes mark the snapshot dirty.
+        // Hidden-page changes are deferred until it is shown, without polling.
+        let dirty = Rc::new(Cell::new(true));
+        let counts_dirty = Rc::new(Cell::new(true));
+        let (wake, mut requested) = tokio::sync::watch::channel(());
+        let request = {
+            let dirty = dirty.clone();
+            let counts_dirty = counts_dirty.clone();
+            let wake = wake.clone();
+            let content = weak_content.clone();
+            Rc::new(move |refresh_counts: bool| {
+                dirty.set(true);
+                if refresh_counts {
+                    counts_dirty.set(true);
                 }
-                (Err(error), _) | (_, Err(error)) => status.set_label(&error.to_string()),
-            }
-            glib::ControlFlow::Continue
+                if content.upgrade().is_some_and(|content| content.is_mapped()) {
+                    wake.send_replace(());
+                }
+            }) as Rc<dyn Fn(bool)>
         };
-        glib::timeout_add_local(Duration::from_millis(500), refresh);
+        *self.imp().native_sync_refresh.borrow_mut() = Some(request);
+        {
+            let dirty = dirty.clone();
+            let wake = wake.clone();
+            content.connect_map(move |_| {
+                if dirty.get() {
+                    let wake = wake.clone();
+                    // `map` runs before the stack finishes mapping ancestors.
+                    glib::idle_add_local_once(move || {
+                        wake.send_replace(());
+                    });
+                }
+            });
+        }
+        content.connect_unrealize(move |_| {
+            wake.send_replace(());
+        });
+        // Serial reads coalesce events received while a snapshot is in flight.
+        // GTK only applies the result; it never waits for the database.
+        glib::spawn_future_local(async move {
+            let mut cached_overview = None;
+            while requested.changed().await.is_ok() {
+                let Some(content) = weak_content.upgrade() else {
+                    break;
+                };
+                if !content.is_realized() {
+                    break;
+                }
+                if !content.is_mapped() {
+                    continue;
+                }
+                dirty.set(false);
+                drop(content);
+                let snapshot_service = service.clone();
+                let refresh_counts = counts_dirty.replace(false);
+                let snapshot = tokio::task::spawn_blocking(move || {
+                    let store = snapshot_service.store();
+                    let list = store.list_jobs()?;
+                    let overview = match (refresh_counts, cached_overview) {
+                        (false, Some(cached)) => cached,
+                        _ => store.overview()?,
+                    };
+                    let account = list
+                        .first()
+                        .and_then(|job| account_name(&snapshot_service, job));
+                    let album_counts = list
+                        .iter()
+                        .map(|job| {
+                            store
+                                .upload_albums(job.id)
+                                .map(|albums| (job.id, albums.len()))
+                        })
+                        .collect::<crate::core::error::Result<BTreeMap<_, _>>>()?;
+                    Ok::<_, crate::core::error::AppError>((list, overview, account, album_counts))
+                })
+                .await;
+                let Some(content) = weak_content.upgrade() else {
+                    break;
+                };
+                let Some(parent) = parent.upgrade() else {
+                    break;
+                };
+                if !content.is_mapped() {
+                    dirty.set(true);
+                    if refresh_counts {
+                        counts_dirty.set(true);
+                    }
+                    continue;
+                }
+                match snapshot {
+                    Ok(Ok((list, overview, account, album_counts))) => {
+                        cached_overview = Some(overview);
+                        let current = list.first().map(|job| job.id);
+                        if shown_account != current {
+                            while let Some(child) = account_box.first_child() {
+                                account_box.remove(&child);
+                            }
+                            if let Some(job) = list.first() {
+                                append_account(
+                                    &account_box,
+                                    &parent,
+                                    &service,
+                                    job,
+                                    account,
+                                    &status,
+                                );
+                            }
+                            shown_account = current;
+                        }
+                        add.set_visible(list.is_empty());
+                        title.set_visible(!list.is_empty());
+                        let enabled = prefs::sync_enabled();
+                        overview_row.set_title(&trf(
+                            "native.progress",
+                            &[
+                                ("done", &overview.synced_items.to_string()),
+                                ("total", &overview.total_items.to_string()),
+                            ],
+                        ));
+                        let summary = if overview.conflict_images > 0 {
+                            trf(
+                                "native.conflicts",
+                                &[("count", &overview.conflict_images.to_string())],
+                            )
+                        } else {
+                            tr(if enabled {
+                                "native.up_to_date_hint"
+                            } else {
+                                "native.disabled"
+                            })
+                        };
+                        overview_row.set_subtitle(&summary);
+                        if overview.conflict_images > 0 {
+                            overview_row.add_css_class("warning");
+                        } else {
+                            overview_row.remove_css_class("warning");
+                        }
+                        group.set_visible(!list.is_empty());
+                        empty_group.set_visible(list.is_empty());
+                        sync.set_sensitive(enabled && list.iter().any(|job| !job.paused));
+                        empty.set_visible(list.is_empty());
+                        cards.retain(|id, card| {
+                            let keep = list.iter().any(|job| job.id == *id);
+                            if !keep {
+                                jobs.remove(&card.group);
+                            }
+                            keep
+                        });
+                        for job in list {
+                            let card = cards.entry(job.id).or_insert_with(|| {
+                                append_job(&jobs, &parent, &service, &job, &status)
+                            });
+                            card.refresh(
+                                &job,
+                                album_counts.get(&job.id).copied().unwrap_or_default(),
+                            );
+                        }
+                    }
+                    Ok(Err(error)) => status.set_label(&error.to_string()),
+                    Err(_) => status.set_label(&tr("native.worker_failed")),
+                }
+            }
+        });
         content
     }
 }
@@ -320,7 +418,7 @@ struct JobCard {
     scope: adw::ActionRow,
 }
 impl JobCard {
-    fn refresh(&self, service: &SyncService, job: &crate::core::sync::store::SyncJob) {
+    fn refresh(&self, job: &crate::core::sync::store::SyncJob, album_count: usize) {
         let state = tr(if !prefs::sync_enabled() {
             "native.disabled"
         } else if job.paused {
@@ -336,17 +434,13 @@ impl JobCard {
         } else {
             "native.pause"
         }));
-        let albums = service.store().upload_albums(job.id).unwrap_or_default();
         self.scope
             .set_subtitle(&if job.upload_scope == UploadScope::All {
                 tr("native.all_albums")
-            } else if albums.is_empty() {
+            } else if album_count == 0 {
                 tr("native.receive_only")
             } else {
-                trf(
-                    "native.album_count",
-                    &[("count", &albums.len().to_string())],
-                )
+                trf("native.album_count", &[("count", &album_count.to_string())])
             });
     }
 }
@@ -545,11 +639,11 @@ fn append_account(
     parent: &gtk::Widget,
     service: &SyncService,
     job: &crate::core::sync::store::SyncJob,
+    account: Option<String>,
     status: &gtk::Label,
 ) {
     let group = adw::PreferencesGroup::new();
     group.set_title(&tr("native.current_account"));
-    let account = account_name(service, job);
     let row = adw::ActionRow::builder()
         .title(account.as_deref().unwrap_or(&tr("native.legacy_account")))
         .subtitle(&job.endpoint)
@@ -567,6 +661,7 @@ fn append_account(
         service,
         job,
         status,
+        account,
         "native-sync-account-menu",
         false,
         std::rc::Rc::new(|| {}),
@@ -581,6 +676,7 @@ fn account_actions(
     service: &SyncService,
     job: &crate::core::sync::store::SyncJob,
     status: &gtk::Label,
+    account: Option<String>,
     name: &str,
     saved: bool,
     removed: std::rc::Rc<dyn Fn()>,
@@ -613,7 +709,7 @@ fn account_actions(
     let parent_login = parent.clone();
     let service_login = service.clone();
     let job_login = job.clone();
-    let account_login = account_name(service, job);
+    let account_login = account;
     login.connect_clicked(move |_| {
         show_relogin(
             &parent_login,
@@ -817,6 +913,7 @@ fn show_accounts(parent: &gtk::Widget, service: SyncService) {
             &action_service,
             &account_job,
             &action_status,
+            account_name(&action_service, &account_job),
             &format!("native-sync-saved-account-menu-{}", account_job.id),
             true,
             std::rc::Rc::new(move || {

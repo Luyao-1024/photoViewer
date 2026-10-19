@@ -22,12 +22,12 @@ static WORK: OnceLock<Mutex<HashMap<JobKey, Arc<JobWork>>>> = OnceLock::new();
 pub(super) static GLOBAL_RUN_EPOCH: AtomicU64 = AtomicU64::new(0);
 
 /// How many cycles one worker may chain back-to-back before handing the job
-/// back to the scheduler.
+/// back to the next change or explicit trigger.
 ///
-/// Chaining exists so a large library does not wait a whole scheduler interval
-/// per batch. Left open it is a tight loop with no delay at all, which is the
-/// wrong shape for anything that can fail repeatedly: the worker holds its slot,
-/// and the rest of the app starves behind it.
+/// Chaining drains a large library without requiring a new change per batch.
+/// Left open it is a tight loop with no delay at all, which is the wrong shape
+/// for anything that can fail repeatedly: the worker holds its slot, and the
+/// rest of the app starves behind it.
 const MAX_CHAINED_CYCLES: usize = 8;
 
 impl SyncService {

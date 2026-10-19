@@ -420,7 +420,7 @@
   "native.disable": "Turn off",
   "native.worker_failed": "The synchronization operation could not finish. Please retry.",
   "native.paused": "Paused",
-  "native.automatic": "Checks every 15 seconds. Pull down in Photos to synchronize.",
+  "native.automatic": "Syncs after 10 seconds without local changes; or pull down Photos to sync",
   "native.albums": "Upload albums",
   "native.pause": "Pause",
   "native.resume": "Resume",

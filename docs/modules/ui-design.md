@@ -535,6 +535,16 @@ Design intent:
   effective edit stops obsolete work and automatically schedules the latest
   configuration. The durable-edit engine behind that rule is described in
   [`sync.md`](sync.md). Unresolved conflicts remain visible in sync status.
+- Cloud sync counts, account labels, task lists and upload-scope summaries load
+  once, then refresh on sync/configuration events through a background worker.
+  Do not poll statistics. Keep one snapshot in flight, coalesce pending events,
+  and update existing widgets on GTK; neither pool waits nor queries may delay
+  the switch, confirmation dialog or category navigation.
+- The cloud sync switch handles requests through `GtkSwitch::state-set`.
+  Opening or cancelling its disable confirmation keeps the committed state and
+  performs no preference write or sync request. Only confirmation saves Off and
+  starts durable history cleanup; reflecting the result cannot re-enter the
+  switch action.
 - Buttons inside the Settings dialog use always-on glass
   (`.glass-toolbar-button`), consistent with the toolbar-button rule for
   dedicated sub-window surfaces.

@@ -313,7 +313,7 @@ Do not require a source-content digest binding or regenerate a thumbnail for
 uplink: temporary original/cache version differences are accepted. Missing local
 thumbnails defer the entry without clearing dirty, recording an upload failure,
 issuing an operation, or consuming an attachment slot. Local thumbnail workers
-own generation; later automatic cycles retry. Reuse fitting JPEG/PNG bytes
+own generation; a later local change or explicit trigger retries them. Reuse fitting JPEG/PNG bytes
 unchanged; conversion/size reduction decodes only cached thumbnail pixels.
 New user content invalidates only that entry's cached snapshot/hash.
 mtime+length alone cannot prove unchanged original content, and server commit

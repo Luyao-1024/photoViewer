@@ -8,11 +8,9 @@
 //! running pushes the end out again, so a burst of imports costs one run rather
 //! than one run per file.
 //!
-//! This is a *trigger*, not a guarantee. The periodic poller in
-//! [`crate::core::sync::service`] still runs on its own schedule and remains
-//! responsible for retrying work that did not finish — a quiet period that never
-//! arrives must not leave an obligation unsent forever, and a run that failed
-//! still has to be retried by something.
+//! This is the only background trigger. Idle time and application startup do not
+//! start a cycle. Unfinished work remains durable until another local change or
+//! an explicit trigger requests a run; failures do not arm a periodic retry.
 
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};

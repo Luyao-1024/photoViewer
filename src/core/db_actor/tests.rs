@@ -145,14 +145,20 @@ async fn sync_state_writes_emit_refresh_events() {
             })
             .unwrap();
         store.set_upload_albums(1, &["Other".into()]).unwrap();
+        store.set_job_paused(1, true).unwrap();
+        store.set_job_paused(1, false).unwrap();
     })
     .await
     .unwrap();
 
-    // Creating a connection and applying an upload-scope change both move cloud
-    // state, so the grid and the overview have to be told to refresh.
-    for _ in 0..2 {
-        assert!(matches!(rx.try_recv(), Ok(DomainEvent::SyncStateDirty)));
+    // Account, scope and run-control changes must notify event-driven settings;
+    // there is no periodic query to discover these changes later.
+    assert!(matches!(rx.try_recv(), Ok(DomainEvent::SyncStateDirty)));
+    for _ in 0..3 {
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(DomainEvent::SyncConfigurationDirty)
+        ));
     }
     assert!(rx.try_recv().is_err());
 }

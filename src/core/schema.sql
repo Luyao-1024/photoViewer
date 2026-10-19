@@ -465,6 +465,10 @@ CREATE INDEX IF NOT EXISTS idx_sync_native_resources_job_state
     ON sync_native_resources(job_id, state);
 CREATE INDEX IF NOT EXISTS idx_sync_publications_job_state
     ON sync_publications(job_id, state);
+-- The overview probes readiness per entry. Keep this lookup bounded instead
+-- of scanning all publications once for every photo on each Settings refresh.
+CREATE INDEX IF NOT EXISTS idx_sync_publications_entry_state
+    ON sync_publications(entry_id, state);
 
 -- Accepted configuration edits must survive exit without mutating in-flight roots.
 CREATE TABLE IF NOT EXISTS sync_job_changes (

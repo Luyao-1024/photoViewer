@@ -66,12 +66,18 @@ operations, so verifying or replacing an already synchronized file does not
 add a second item. Uploading changes only the activity text, never the counting
 scope. New sessions retain the persisted fraction; complete discovery refreshes
 the inventory before any transfer, and new baselines advance the numerator on
-the next overview poll. Before first discovery, only previously known paths can
+the next synchronization event. Before first discovery, only previously known paths can
 be counted. `Completed` is reserved for `synced_items == total_items`; an
 individual 5-photo or 20-metadata batch ending does not by itself change the
 verdict from `Running` to `Completed`. When unresolved image conflicts exist,
 the completed label also shows their count. These are library-wide totals, not
 current-run progress.
+
+Overview statistics load once when the repository is attached, then refresh on
+actual domain changes. `SyncStateDirty` requests fresh sync counts; task configuration changes and ordinary
+library-count changes reuse the cached sync overview. There is no two-second
+statistics poll. Events received during a read request one coalesced follow-up,
+so a completed batch cannot leave stale progress on screen.
 
 The window keeps Photos and the currently active `AlbumDetailPage` as peer
 children of `MainWindow`'s `browsing_stack`. That stack uses `crossfade` with a
@@ -175,7 +181,7 @@ triggered by application launch or by an accepted configuration change is
 visible without the pull. That last reveal is edge-triggered on the
 not-running → running transition and only *reveals* — it never starts a run, so
 the pull remains the only gesture that does. It is deliberately not reversed:
-folding the panel during a run is never undone by a later poll, and a settled
+folding the panel during a run is never undone by a later progress event, and a settled
 result stays readable instead of folding itself away. A grid scrolled away from
 the first row keeps its own disclosure state, while a placeholder stack
 (indexing, empty library, scan failure) has no scroll offset and therefore
@@ -485,7 +491,7 @@ decisions it makes are answered by workers instead:
   selection, and acting on it turned the click into a no-op - the regression
   `ux_click_flows`'s batch-favorite journey caught.
 - "Is everything reachable already selected?" reads `live_total`, which rides
-  along with the overview worker that already runs off-thread every two seconds.
+  along with the overview worker that runs off-thread on library changes.
   Until its first snapshot lands, the question falls back to whether the realized
   grid is fully selected. Select-all itself fetches its 2,000 ids in a worker
   guarded by `select_all_in_flight`, so tiles change one loop after the click and

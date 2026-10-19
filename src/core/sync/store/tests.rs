@@ -391,3 +391,45 @@ fn upload_album_names_cannot_escape_the_local_root() {
         );
     }
 }
+
+#[test]
+fn overview_checks_publication_readiness_without_scanning_every_photo() {
+    crate::testing::Sandbox::install();
+    let pool =
+        crate::core::db::init_pool(&temp_root("overview-publication-scale").join("library.db"))
+            .unwrap();
+    let store = SyncStore::new(pool.clone());
+    let job = store
+        .create_job(&new_job(temp_root("overview-publication-scale-media")))
+        .unwrap();
+    let mut conn = pool.get().unwrap();
+    let plan = conn
+        .prepare("EXPLAIN QUERY PLAN SELECT 1 FROM sync_publications p WHERE p.entry_id=?1 AND p.state NOT IN ('complete','superseded')")
+        .unwrap()
+        .query_map([1], |row| row.get::<_, String>(3))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert!(plan.iter().any(|step| step.contains("SEARCH p") && step.contains("entry_id=?")),
+        "overview must look up one photo's publications rather than scan the entire table: {plan:?}");
+
+    let tx = conn.transaction().unwrap();
+    for id in 1..=4000 {
+        let name = format!("photo-{id}.jpg");
+        let path = job.local_root.join(&name);
+        tx.execute("INSERT INTO media_items(id,uri,path,folder_path,mime_type,file_mtime,file_size,blake3_hash,indexed_at,storage_location,thumbnail_ready) VALUES(?1,?2,?3,?4,'image/jpeg',1,1,'',1,3,1)", params![id,crate::core::file_uri::from_path(&path),path.to_string_lossy(),job.local_root.to_string_lossy()]).unwrap();
+        tx.execute("INSERT INTO sync_entries(id,job_id,media_id,relative_path,native_dirty,native_confirmed_generation) VALUES(?1,?2,?1,?3,0,'generation')", params![id,job.id,name]).unwrap();
+        tx.execute("INSERT INTO sync_publications(publication_id,job_id,entry_id,state) VALUES(?1,?2,?3,?4)", params![format!("publication-{id}"),job.id,id,if id == 4000 { "pending" } else { "complete" }]).unwrap();
+    }
+    tx.commit().unwrap();
+    drop(conn);
+    let started = std::time::Instant::now();
+    let overview = store.overview_with_sync_enabled(true).unwrap();
+    assert_eq!(overview.total_items, 4000);
+    assert_eq!(overview.synced_items, 3999);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "4,000-photo overview took {:?}",
+        started.elapsed()
+    );
+}

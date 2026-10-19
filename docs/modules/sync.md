@@ -40,8 +40,8 @@ Native uplink reads the existing local thumbnail cache (Large, Medium, then
 Small) using its normal source path/mtime identity. It does not decode originals,
 extract video frames, request thumbnail generation, or require source-digest
 provenance for the cache. Missing thumbnails leave the photo dirty and deferred,
-without an upload error or consuming an attachment slot. A later automatic cycle
-retries after local thumbnail generation. Fitting JPEG/PNG caches are uploaded
+without an upload error or consuming an attachment slot. A later cycle triggered by a new local change or an explicit request retries
+after local thumbnail generation. Fitting JPEG/PNG caches are uploaded
 byte-for-byte; conversion or size reduction reads only the cached thumbnail.
 Metadata-only changes and deletions do not require a thumbnail.
 
@@ -53,6 +53,19 @@ Protocol definitions remain exclusively in the sibling server repository.
 | [Wire mapping](native-sync-protocol.md) | endpoints, DTO/capability names, scope/auth, limits, errors |
 | [Storage/publication](native-sync-storage.md) | actor/migration, dirty/version facts, receive progress, publication |
 | [Implementation/acceptance](native-sync-plan.md) | C1.1–C1.6 patch order and NC01–NC20 evidence |
+
+## Automatic synchronization
+
+Background synchronization starts only after local changes have been quiet for
+10 seconds. Startup and idle time do not request a cycle; there is no periodic
+poll or timed failure retry. Successful batches continue immediately while they
+make progress and have outstanding work. Unfinished work remains durable until
+another local change or explicit trigger. Cloud-only changes require an explicit
+trigger, such as Sync Now or Photos pull-to-refresh. Accepted effective
+configuration changes also retain their existing automatic trigger.
+
+`tests/native_sync_scheduling.rs` verifies startup/idle silence, the 10-second
+local-change trigger, no timed retry after failure, and a subsequent change.
 
 ## Relational persistence and batch timing
 

@@ -11,7 +11,7 @@
 - 保持账号、配置代际、本地版本和水位检查；普通接收不得清除并发编辑。
 - 已有开发数据库在一个事务中转换，转换失败回滚，不通过清空历史或重新上传恢复计数。数据库开发版本仍为 1。
 
-常用索引至少覆盖 `(job_id, native_photo_id)`、`(job_id, native_master_id)`、`(job_id, relative_path)`、接收记录 ID／所属照片 ID、资源身份和发布所属照片。通过实际查询计划验证，不仅检查索引名称。
+常用索引至少覆盖 `(job_id, native_photo_id)`、`(job_id, native_master_id)`、`(job_id, relative_path)`、接收记录 ID／所属照片 ID、资源身份和发布所属照片。通过实际查询计划验证，不仅检查索引名称。概览逐照片检查发布完成状态时，使用 `sync_publications(entry_id,state)` 覆盖索引；不得退化成对每张照片全表扫描发布记录。
 
 服务端 wire 契约仍由 [协议链接索引](native-sync-protocol.md) 指向的 SyncServer 仓库拥有。
 

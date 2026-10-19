@@ -101,7 +101,10 @@ pub enum DomainEvent {
     },
     ThumbnailStatsDirty,
     LiveCountDirty,
+    /// Sync progress/lifecycle changed; refresh persisted counts.
     SyncStateDirty,
+    /// Task controls/configuration changed; reuse cached sync counts.
+    SyncConfigurationDirty,
 }
 
 #[derive(Clone)]

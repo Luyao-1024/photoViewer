@@ -210,6 +210,7 @@ fn domain_event_label(event: &DomainEvent) -> String {
         DomainEvent::ThumbnailStatsDirty => "thumbnail_stats_dirty".to_string(),
         DomainEvent::LiveCountDirty => "live_count_dirty".to_string(),
         DomainEvent::SyncStateDirty => "sync_state_dirty".to_string(),
+        DomainEvent::SyncConfigurationDirty => "sync_configuration_dirty".to_string(),
         DomainEvent::ScanPhase { active, error } => {
             format!("scan_phase(active={active}, failed={})", error.is_some())
         }
@@ -246,11 +247,17 @@ fn apply_domain_event_to_legacy_ui(
         }
         DomainEvent::SyncStateDirty => {
             if let Some(window) = window.upgrade() {
-                window.refresh_cloud_badges();
+                window.refresh_sync_state();
+            }
+        }
+        DomainEvent::SyncConfigurationDirty => {
+            if let Some(window) = window.upgrade() {
+                window.refresh_sync_configuration();
             }
         }
         DomainEvent::LiveCountDirty => {
             if let Some(window) = window.upgrade() {
+                window.refresh_library_counts();
                 window.refresh_shared_media_list_from_repository();
                 window.refresh_visible_album_detail_page();
                 window.refresh_cloud_badges();
@@ -422,9 +429,8 @@ async fn initialize(
         thumbnail_loader.clone(),
     );
 
-    // 打开应用即触发一次同步：与首页下拉相同的"一次性运行全部已保存任务"
-    // 行为；窗口完成初始化后还会安装远端轮询和本地变更触发。
-    // 同步规划直接读文件系统与同步条目，不依赖启动扫描结果，因此与扫描并行。
+    // 启动时结算旧运行并安装本地变更触发，不主动发起同步。
+    // 本地变更停止 10 秒后自动同步；手动同步和有效配置变更共用配置 worker。
     {
         let sync_pool = pool.clone();
         let sync_actor = db_actor.clone();

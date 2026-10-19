@@ -893,6 +893,12 @@ fn execute_command(
                     | crate::core::sync::store::SyncWrite::CreateJob(_)
                     | crate::core::sync::store::SyncWrite::DeleteJob { .. }
                     | crate::core::sync::store::SyncWrite::SetUploadAlbums { .. }
+                    | crate::core::sync::store::SyncWrite::SetJobPaused { .. }
+                    | crate::core::sync::store::SyncWrite::QueueEdit { .. }
+                    | crate::core::sync::store::SyncWrite::ApplyChange { .. }
+                    | crate::core::sync::store::SyncWrite::FailPendingEdit { .. }
+                    | crate::core::sync::store::SyncWrite::MarkJobCompleted { .. }
+                    | crate::core::sync::store::SyncWrite::MarkJobFailed { .. }
             );
             let cloud_state_changed = cloud_state_changed
                 || matches!(&command,
@@ -913,7 +919,20 @@ fn execute_command(
                     | crate::core::sync::store::SyncWrite::FinishReset { .. }
             ) || matches!(&command,crate::core::sync::store::SyncWrite::Runtime(c)
                     if matches!(c.as_ref(),crate::core::sync::store::runtime::Command::SelectAccount {job:Some(_)} | crate::core::sync::store::runtime::Command::ClearAccount));
+            let configuration_only = matches!(
+                &command,
+                crate::core::sync::store::SyncWrite::SetJobPaused { .. }
+                    | crate::core::sync::store::SyncWrite::SetUploadAlbums { .. }
+                    | crate::core::sync::store::SyncWrite::QueueEdit { .. }
+                    | crate::core::sync::store::SyncWrite::ApplyChange { .. }
+                    | crate::core::sync::store::SyncWrite::FailPendingEdit { .. }
+            );
             let result = crate::core::sync::store::execute_write(pool, command)?;
+            let cloud_state_changed = cloud_state_changed
+                && !matches!(
+                    result,
+                    crate::core::sync::store::SyncWriteResult::Changed(false)
+                );
             if visibility_changed {
                 events.send(DomainEvent::LiveCountDirty);
                 events.send(DomainEvent::AlbumsDirty {
@@ -969,7 +988,11 @@ fn execute_command(
                 }
             }
             if cloud_state_changed {
-                events.send(DomainEvent::SyncStateDirty);
+                events.send(if configuration_only {
+                    DomainEvent::SyncConfigurationDirty
+                } else {
+                    DomainEvent::SyncStateDirty
+                });
             }
             Ok(DbCommandResult::Sync(result))
         }
