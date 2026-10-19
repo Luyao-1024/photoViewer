@@ -27,7 +27,28 @@ pub(super) fn pending(conn: &rusqlite::Connection) -> Result<bool> {
     Ok(read(conn)?.is_some())
 }
 
+pub(super) fn local_changes_enabled(conn: &rusqlite::Connection) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT value <> '0' FROM settings WHERE key='native_sync_local_changes_enabled'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(true))
+}
+
 impl SyncStore {
+    pub(crate) fn resume_local_changes(&self) -> Result<()> {
+        let conn = self.pool.get()?;
+        let resume = !local_changes_enabled(&conn)? && !pending(&conn)?;
+        drop(conn);
+        if resume {
+            self.write(SyncWrite::ResumeLocalChanges)?;
+        }
+        Ok(())
+    }
+
     pub fn reset_pending(&self) -> Result<bool> {
         Ok(self.reset_intent()?.is_some())
     }
@@ -79,6 +100,7 @@ pub(super) fn begin(pool: &DbPool, token: String) -> Result<SyncWriteResult> {
     let mut conn = pool.get()?;
     let tx = conn.transaction()?;
     tx.execute("INSERT INTO sync_reset_state(id,token,last_error) VALUES(1,?1,NULL) ON CONFLICT(id) DO UPDATE SET token=excluded.token,last_error=NULL",[token])?;
+    tx.execute("INSERT INTO settings(key,value) VALUES('native_sync_local_changes_enabled','0') ON CONFLICT(key) DO UPDATE SET value=excluded.value", [])?;
     // Monotonic generations also stop runs that do not monitor the UI switch.
     tx.execute(
         "UPDATE sync_jobs SET config_generation=config_generation+1",
@@ -164,4 +186,15 @@ pub(super) fn finish(pool: &DbPool, token: String) -> Result<SyncWriteResult> {
     tx.execute("DELETE FROM sync_reset_state WHERE token=?1", [token])?;
     tx.commit()?;
     Ok(SyncWriteResult::Changed(true))
+}
+
+/// Resume tracking only after opt-in has crossed the durable reset barrier.
+pub(super) fn resume_local_changes(pool: &DbPool) -> Result<SyncWriteResult> {
+    let mut conn = pool.get()?;
+    let tx = conn.transaction()?;
+    if !pending(&tx)? {
+        tx.execute("UPDATE settings SET value='1' WHERE key='native_sync_local_changes_enabled' AND value='0'", [])?;
+    }
+    tx.commit()?;
+    Ok(SyncWriteResult::None)
 }

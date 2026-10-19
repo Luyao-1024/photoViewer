@@ -78,6 +78,7 @@ impl SyncService {
         if !crate::core::prefs::sync_enabled() || self.store.reset_pending()? {
             return Ok(0);
         }
+        self.store.resume_local_changes()?;
         let mut asked = 0;
         for job in self.store.list_jobs()? {
             if job.paused {
@@ -99,6 +100,7 @@ impl SyncService {
         if !crate::core::prefs::sync_enabled() || self.store.reset_pending()? {
             return Ok(());
         }
+        self.store.resume_local_changes()?;
         for job in self.store.list_jobs()? {
             if !job.paused && !self.has_pending_work(job.id)? && !self.is_job_running(job.id)? {
                 self.request_job_sync(job.id)?;

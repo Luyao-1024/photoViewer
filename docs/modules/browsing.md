@@ -387,6 +387,21 @@ scroll the viewport to top.
 
 Media activation is debounced while opening `ViewerPage` on the shared `AdwNavigationView`. Rapid repeated clicks in Year/Month/Day views must open only one viewer page: every viewer entry point (Photos, album details, search results) arms a short `viewer_open_pending` window that ignores duplicate activations during the push transition. There is no initial-open navigation-pop guard — a second click does not close the viewer (it cannot produce a pop), and an immediate back / Escape / swipe-back right after opening is intentional user input and is honored, so `can_pop` stays true from the first `show_at`.
 
+Cloud downloads use an explicit incremental path rather than interpreting each
+shared-list notification as a request to replace the whole layout. The actor
+emits an upsert when a thumbnail first makes a photo displayable and a field
+update when an already visible photo gains its original or a newer thumbnail.
+Photos and album-detail grids resolve the changed identities' canonical ranks
+and section counts off the GTK thread, coalesce pending changes, and retain
+unaffected slot GObjects, resident snapshots and painted thumbnails. Insertion
+replaces only the shifted tail/filler of its date section; later sections move
+without being rebound. Existing-photo updates replace at most their own slot.
+Queries inconsistent with the captured change set fall back to a metadata
+reload. Inactive modes defer work until activation. Regression coverage includes
+`sync_insertion_` model tests and `tests/ux_sync_grid_updates.rs`, which selects a
+painted photo through real input and checks that a background admission leaves
+its widget, texture and selection intact.
+
 Photos multi-select state is owned by each `VirtualMediaGrid` as a stable
 `MediaId` set. A recycled factory cell derives its checkmark from that set when
 it binds; selection must not depend on a realized cell or a FlowBox child.

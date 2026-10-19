@@ -52,6 +52,13 @@ impl SyncService {
         let obligations = self.store().outstanding_resources(job_id)?;
         let requested = obligations.len();
         let started = Instant::now();
+        if requested > 0 {
+            tracing::info!(target: crate::core::log_targets::SYNC,
+                job_id, requested,
+                staged = obligations.iter().filter(|work| work.staging_path.is_some()).count(),
+                "云同步下载批次开始");
+        }
+        let mut reused = 0usize;
         for obligation in obligations {
             let fetch_started = Instant::now();
             let fetched = {
@@ -89,7 +96,7 @@ impl SyncService {
                         "云同步资源下载完成"
                     );
                 }
-                Ok(None) => {}
+                Ok(None) => reused += 1,
                 Err(failure) => {
                     let reason = failure.to_string();
                     self.store().fail_resource(
@@ -104,7 +111,7 @@ impl SyncService {
                         error = %reason,
                         "云同步资源下载失败"
                     );
-                    report.failures.push((obligation.asset_id, reason));
+                    report.failures.push((obligation.asset_id.clone(), reason));
                 }
             }
             // Publish ready photos as their own pair arrives, without waiting
@@ -112,8 +119,9 @@ impl SyncService {
             let previously_admitted = report.admitted;
             let service = self.clone();
             let mut available = std::mem::take(&mut report);
+            let asset = obligation.asset_id.clone();
             report = tokio::task::spawn_blocking(move || {
-                service.admit_complete_publications(job_id, &mut available)?;
+                service.admit_publications_for_asset(job_id, Some(&asset), &mut available)?;
                 Ok::<_, AppError>(available)
             })
             .await
@@ -141,7 +149,7 @@ impl SyncService {
         if requested > 0 || report.admitted > 0 || !report.failures.is_empty() {
             tracing::info!(
                 target: crate::core::log_targets::SYNC,
-                job_id, requested, fetched = report.fetched, admitted = report.admitted,
+                job_id, requested, fetched = report.fetched, reused, admitted = report.admitted,
                 failed = report.failures.len(),
                 elapsed_ms = started.elapsed().as_millis() as u64,
                 "云同步下载批次结束"
@@ -159,11 +167,6 @@ impl SyncService {
             .store()
             .get_job(work.job_id)?
             .ok_or_else(|| error("download job was removed"))?;
-        let client = self.transport_client_for(&job).await?;
-        let descriptor = client
-            .describe_asset(&work.asset_id, role)
-            .await
-            .map_err(|e| error(e.to_string()))?;
         let hex = work
             .expected_sha256
             .clone()
@@ -183,16 +186,11 @@ impl SyncService {
                 "projected resource exceeds the configured size limit",
             ));
         }
-        let expected = ContentDigest {
+        let mut expected = ContentDigest {
             size,
             hex,
-            base64: descriptor.descriptor.file_checksum.clone(),
+            base64: String::new(),
         };
-        if ContentDigest::hex_from_descriptor_base64(&expected.base64).as_deref()
-            != Some(&expected.hex)
-        {
-            return Err(error("resource descriptor differs from projection"));
-        }
         if let Some(path) = work.staging_path.as_ref().map(PathBuf::from) {
             let expected = expected.clone();
             let check_path = path.clone();
@@ -203,6 +201,19 @@ impl SyncService {
             {
                 return Ok(None);
             }
+        }
+        // Locally staged bytes are checked against the durable expected digest
+        // before credentials/HTTP are needed. A restart can reuse them directly.
+        let client = self.transport_client_for(&job).await?;
+        let descriptor = client
+            .describe_asset(&work.asset_id, role)
+            .await
+            .map_err(|e| error(e.to_string()))?;
+        expected.base64 = descriptor.descriptor.file_checksum.clone();
+        if ContentDigest::hex_from_descriptor_base64(&expected.base64).as_deref()
+            != Some(&expected.hex)
+        {
+            return Err(error("resource descriptor differs from projection"));
         }
         let folder = self
             .staging_root()
@@ -282,10 +293,19 @@ impl SyncService {
     }
 
     fn admit_complete_publications(&self, job_id: i64, report: &mut TransferReport) -> Result<()> {
+        self.admit_publications_for_asset(job_id, None, report)
+    }
+
+    fn admit_publications_for_asset(
+        &self,
+        job_id: i64,
+        asset: Option<&str>,
+        report: &mut TransferReport,
+    ) -> Result<()> {
         let staged_thumbnails = {
             let conn = self.pool().get()?;
-            let mut stmt=conn.prepare("SELECT asset_id,staging_path FROM sync_native_resources WHERE job_id=?1 AND role='thumbnail' AND state IN ('staged','verified') AND staging_path IS NOT NULL AND EXISTS(SELECT 1 FROM sync_publications p JOIN sync_entries e ON e.id=p.entry_id JOIN media_items m ON m.id=e.media_id WHERE p.job_id=?1 AND p.thumbnail_asset_id=sync_native_resources.asset_id AND p.state='pending' AND m.storage_location=2 AND m.thumbnail_ready=0)")?;
-            let rows = stmt.query_map([job_id], |r| {
+            let mut stmt=conn.prepare("SELECT asset_id,staging_path FROM sync_native_resources WHERE job_id=?1 AND role='thumbnail' AND state IN ('staged','verified') AND staging_path IS NOT NULL AND (?2 IS NULL OR asset_id=?2) AND EXISTS(SELECT 1 FROM sync_publications p JOIN sync_entries e ON e.id=p.entry_id JOIN media_items m ON m.id=e.media_id WHERE p.job_id=?1 AND p.thumbnail_asset_id=sync_native_resources.asset_id AND p.state='pending' AND m.storage_location=2 AND m.thumbnail_ready=0)")?;
+            let rows = stmt.query_map(rusqlite::params![job_id, asset], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     PathBuf::from(r.get::<_, String>(1)?),
@@ -296,7 +316,7 @@ impl SyncService {
         for (asset, path) in staged_thumbnails {
             self.prepare_downloaded_thumbnail(job_id, &asset, &path)?;
         }
-        let intents = self.store().pending_publications(job_id)?;
+        let intents = self.store().publications_for_asset(job_id, asset)?;
         if intents.is_empty() {
             return Ok(());
         }
@@ -379,15 +399,37 @@ impl SyncService {
         ));
         let backup = parent.join(format!(".photoviewer-sync-{}.old", uuid::Uuid::new_v4()));
         std::fs::copy(original, &next)?;
-        std::fs::File::open(&next)?.sync_all()?;
         let old = std::fs::symlink_metadata(&target).ok();
         if old.as_ref().is_some_and(|m| !m.is_file()) {
             let _ = std::fs::remove_file(&next);
             return Err(error("publication target is not an owned regular file"));
         }
         let conn = self.pool().get()?;
-        let (baseline,old_path):(bool,Option<String>)=conn.query_row("SELECT e.native_has_baseline,m.path FROM sync_entries e LEFT JOIN media_items m ON m.id=e.media_id WHERE e.job_id=?1 AND e.native_photo_id=?2",rusqlite::params![job,photo.photo_id],|r|Ok((r.get(0)?,r.get(1)?)))?;
+        let (baseline, old_path, mtime_seconds, mtime_ns): (
+            bool,
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+        ) = conn.query_row(
+            "SELECT e.native_has_baseline,m.path,m.file_mtime,m.file_mtime_ns
+                 FROM sync_entries e LEFT JOIN media_items m ON m.id=e.media_id
+                 WHERE e.job_id=?1 AND e.native_photo_id=?2",
+            rusqlite::params![job, photo.photo_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )?;
         drop(conn);
+        // The metadata row already determines the photo's fallback sort time.
+        // Restore that timestamp on the owned temporary before cache import,
+        // fsync and rename; a download must never become a new modification.
+        if let Some(seconds) = mtime_seconds {
+            let expected = match mtime_ns.filter(|ns| *ns != 0) {
+                Some(ns) => chrono::DateTime::<chrono::Utc>::from_timestamp_nanos(ns),
+                None => chrono::DateTime::from_timestamp(seconds, 0)
+                    .ok_or_else(|| error("invalid stored original modification time"))?,
+            };
+            std::fs::File::open(&next)?.set_modified(std::time::SystemTime::from(expected))?;
+        }
+        std::fs::File::open(&next)?.sync_all()?;
         if old.is_some() && (!baseline || old_path.as_deref() != target.to_str()) {
             let _ = std::fs::remove_file(&next);
             return Err(error("an unowned local file occupies the remote path"));

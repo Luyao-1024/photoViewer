@@ -1841,3 +1841,47 @@ fn orphan_thumbnail_cache_files_are_purged_and_row_caches_kept() {
         "purge must not touch media rows"
     );
 }
+
+#[test]
+fn downloaded_thumbnail_invalidates_only_its_own_memory_copies() {
+    let sandbox = crate::testing::Sandbox::install();
+    let dir = sandbox.scratch("targeted-thumbnail-invalidation");
+    let pool = db::init_pool(&dir.path().join("library.db")).unwrap();
+    let loader = ThumbnailLoader::new(pool, dir.path().join("cache"));
+    let changed = "file:///nonexistent/changed.jpg";
+    let untouched = "file:///nonexistent/untouched.jpg";
+    let mtime = Some(std::time::UNIX_EPOCH);
+    let bytes = gtk4::glib::Bytes::from_owned(vec![10_u8, 20, 30, 255]);
+    let loaded = LoadedThumb {
+        texture: gtk4::gdk::MemoryTexture::new(1, 1, gtk4::gdk::MemoryFormat::R8g8b8a8, &bytes, 4)
+            .upcast(),
+        is_light: Some(false),
+        unavailable: false,
+    };
+    for uri in [changed, untouched] {
+        for size in [
+            ThumbnailSize::Small,
+            ThumbnailSize::Medium,
+            ThumbnailSize::Large,
+        ] {
+            let key = cache_key_str(uri, size, mtime).unwrap();
+            let mut state = loader.state.lock().unwrap();
+            state.mem_cache.put(key.clone(), loaded.clone());
+            state.prewarm_mem_cache.put(key, loaded.clone());
+        }
+        loader.insert_exif_thumb(uri, mtime, loaded.clone());
+    }
+    loader.invalidate_cached_thumbnail(changed, mtime);
+    for size in [
+        ThumbnailSize::Small,
+        ThumbnailSize::Medium,
+        ThumbnailSize::Large,
+    ] {
+        assert!(loader.try_load_mem_cached(changed, size, mtime).is_none());
+        assert!(loader.try_load_mem_cached(untouched, size, mtime).is_some());
+    }
+    assert!(loader.try_load_exif_thumb_cached(changed, mtime).is_none());
+    assert!(loader
+        .try_load_exif_thumb_cached(untouched, mtime)
+        .is_some());
+}

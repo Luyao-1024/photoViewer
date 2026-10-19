@@ -429,3 +429,58 @@ fn dirty_states_are_exclusive_and_delete_is_four() {
     assert_eq!(NativeDirty::DELETE, 4);
     assert!(NativeDirty(NativeDirty::CLEAN).is_clean());
 }
+
+#[test]
+fn off_history_stays_empty_during_local_changes() {
+    let fixture = fixture("global-off-local-changes");
+    confirm_identity(&fixture);
+    fixture.store.begin_reset().unwrap();
+    assert!(note(&fixture, ChangeCategory::Metadata, 2, "during-reset").is_none());
+    fixture.store.resume_local_changes().unwrap();
+    assert!(note(&fixture, ChangeCategory::Metadata, 2, "reset-cannot-resume").is_none());
+    let reset = fixture.store.reset_intent().unwrap().unwrap();
+    assert!(fixture.store.finish_reset(&reset.token).unwrap());
+
+    // The selected account and its folder configuration survive global Off.
+    assert!(fixture.store.job_is_selected(fixture.job.id).unwrap());
+    assert!(note(&fixture, ChangeCategory::Metadata, 3, "off-edit").is_none());
+    assert!(note(&fixture, ChangeCategory::Deletion, 4, "off-delete").is_none());
+    let entries: i64 = fixture
+        .pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM sync_entries WHERE job_id=?1",
+            [fixture.job.id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        entries, 0,
+        "Off must retain configuration without rebuilding history"
+    );
+}
+
+#[test]
+fn off_history_does_not_enroll_deletion_of_an_untracked_path() {
+    let fixture = fixture("off-missing-untracked");
+    fixture.store.begin_reset().unwrap();
+    let reset = fixture.store.reset_intent().unwrap().unwrap();
+    assert!(fixture.store.finish_reset(&reset.token).unwrap());
+    fixture.store.resume_local_changes().unwrap();
+    // Re-enabling can precede startup pruning of files removed while Off.
+    // A media index row alone is not evidence of an existing sync obligation.
+    assert!(note(&fixture, ChangeCategory::Deletion, 1, "startup-prune").is_none());
+    assert!(fixture
+        .store
+        .uplink_view(fixture.job.id)
+        .unwrap()
+        .is_empty());
+
+    let entry = confirm_identity(&fixture);
+    assert!(note(&fixture, ChangeCategory::Deletion, 2, "active-delete").is_some());
+    let pending = fixture.store.uplink_view(fixture.job.id).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].entry_id, entry);
+    assert!(pending[0].dirty.contains(NativeDirty::DELETE));
+}

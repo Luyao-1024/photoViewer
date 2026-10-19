@@ -975,6 +975,52 @@ impl MainWindow {
         }
     }
 
+    /// Apply download events without turning a one-photo change into a full
+    /// Photos layout reload. Returns false for events requiring normal routing.
+    pub fn apply_synchronization_media_event(
+        &self,
+        event: &crate::core::events::DomainEvent,
+        media_list: &gtk::gio::ListStore,
+    ) -> bool {
+        use crate::core::events::{ChangeSource, DomainEvent};
+        let (items, inserted) = match event {
+            DomainEvent::MediaUpserted {
+                source: ChangeSource::Synchronization,
+                items,
+            } if items.iter().all(MediaItem::can_display) => (items, true),
+            DomainEvent::MediaUpdated {
+                source: ChangeSource::Synchronization,
+                items,
+                fields,
+            } if fields.thumbnail
+                && !fields.metadata
+                && !fields.trash
+                && items.iter().all(MediaItem::can_display) =>
+            {
+                (items, false)
+            }
+            _ => return false,
+        };
+        let Some(page) = self.visible_browsing_page() else {
+            return false;
+        };
+        let grids = if let Ok(photos) = page.clone().downcast::<PhotosPage>() {
+            photos.synchronization_grids()
+        } else if let Ok(album) = page.downcast::<crate::ui::AlbumDetailPage>() {
+            album.imp().grid.borrow().iter().cloned().collect()
+        } else {
+            return false;
+        };
+        for grid in &grids {
+            grid.begin_sync_item_update(items, inserted);
+        }
+        crate::ui::apply_to_media_list::apply_to_media_list(media_list, event);
+        for grid in &grids {
+            grid.end_sync_item_update();
+        }
+        true
+    }
+
     pub(crate) fn refresh_cloud_badges(&self) {
         if let Some(page) = self.visible_browsing_page() {
             if let Ok(photos) = page.clone().downcast::<PhotosPage>() {

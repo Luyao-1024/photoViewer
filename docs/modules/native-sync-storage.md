@@ -352,6 +352,21 @@ last complete version. Never advertise LocalReady solely because one rename
 or one resource finished. Suppressed local removals keep unchanged remote bytes
 absent; metadata-only remote changes do not lift content-version suppression.
 
+Resume validates owned staged bytes against the durable expected size/SHA-256
+before any credential lookup or asset-descriptor request. Per-resource admission
+queries only photos referencing that asset, including shared-asset owners; the
+batch's final reconciliation still checks all remaining publications. Restart
+must not revisit the complete publication set once per already staged thumbnail.
+
+Original publication restores the pre-download media row's `file_mtime_ns`
+(or its second-precision `file_mtime` fallback) onto the owned temporary file
+before cache import, fsync and atomic rename. Unix epoch zero is a valid stored
+timestamp. Admission reads that final file stamp back, so filesystem mtime,
+SQLite, ordinary scan short-circuiting and cache identity agree. A photo with no
+capture date retains its existing fallback sort time instead of moving to the
+download date. Cache replacement invalidates only that photo's memory copies;
+preserving mtime must not keep a previous content generation's thumbnail alive.
+
 Use existing source path + final original mtime cache identity (`thumb-v4`),
 ThumbnailSize Small/Medium/Large (256/512/1024) and current memory/in-flight keys.
 Import/downscale the validated server thumbnail through the existing thumbnail
@@ -392,7 +407,13 @@ their state; a shared local lease broker is only admission optimization.
 
 Global Off keeps configured jobs/credentials/roots/selected scope while discarding
 owned runtime/history state under the existing explicit reset contract. It never
-deletes ordinary media or remote history. Exit/restart, ordinary failure or scope
+deletes ordinary media or remote history. The scalar settings key
+`native_sync_local_changes_enabled` is set to 0 in the reset-intent transaction
+and remains 0 after cleanup; selected-account enablement is independent. Local
+mutations do not rebuild entries until opt-in resumes tracking after the barrier.
+Pruning a stale media row with no existing sync entry never enrolls a deletion,
+including when a file removed during Off is first observed after opt-in.
+Exit/restart, ordinary failure or scope
 uncheck is not Global Off and preserves dirty/unknown-operation evidence. Failed
 or deleted native jobs do not restart from old triggers. Recovery preserves the current native jobs and their issued-operation evidence.
 

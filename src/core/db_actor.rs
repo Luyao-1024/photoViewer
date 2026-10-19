@@ -149,7 +149,8 @@ impl DbCommand {
             Self::RefreshAlbumsInternal => DbWritePriority::DerivedRefresh,
             Self::ReconcileTrash { .. } => DbWritePriority::Trash,
             Self::Sync(
-                crate::core::sync::store::SyncWrite::BeginReset { .. }
+                crate::core::sync::store::SyncWrite::ResumeLocalChanges
+                | crate::core::sync::store::SyncWrite::BeginReset { .. }
                 | crate::core::sync::store::SyncWrite::FinishReset { .. }
                 | crate::core::sync::store::SyncWrite::FailReset { .. }
                 | crate::core::sync::store::SyncWrite::CreateJob(_)
@@ -871,11 +872,15 @@ fn execute_command(
             let admitted_uri = match &command {
                 crate::core::sync::store::SyncWrite::Runtime(command) => match command.as_ref() {
                     crate::core::sync::store::runtime::Command::Admit { item, .. } => {
-                        Some(item.uri.clone())
+                        let visible = db::get_media_item_by_uri(pool, &item.uri)?
+                            .is_some_and(|old| old.can_display());
+                        Some((item.uri.clone(), visible))
                     }
                     crate::core::sync::store::runtime::Command::ThumbnailReady {
                         media, ..
-                    } => db::get_media_item(pool, *media).ok().map(|item| item.uri),
+                    } => db::get_media_item(pool, *media)
+                        .ok()
+                        .map(|item| (item.uri.clone(), item.can_display())),
                     _ => None,
                 },
                 _ => None,
@@ -936,11 +941,26 @@ fn execute_command(
             if lifecycle_changed {
                 events.send(DomainEvent::SyncStateDirty);
             }
-            if let Some(uri) = admitted_uri {
+            if let Some((uri, was_visible)) = admitted_uri {
                 if let Some(item) = db::get_media_item_by_uri(pool, &uri)? {
-                    events.send(DomainEvent::MediaUpserted {
-                        source: ChangeSource::Synchronization,
-                        items: vec![item],
+                    events.send(if was_visible {
+                        DomainEvent::MediaUpdated {
+                            source: ChangeSource::Synchronization,
+                            items: vec![item],
+                            fields: MediaFields {
+                                favorite: false,
+                                metadata: false,
+                                location: true,
+                                trash: false,
+                                thumbnail: true,
+                                attributes: false,
+                            },
+                        }
+                    } else {
+                        DomainEvent::MediaUpserted {
+                            source: ChangeSource::Synchronization,
+                            items: vec![item],
+                        }
                     });
                     events.send(DomainEvent::AlbumsDirty {
                         source: ChangeSource::Synchronization,

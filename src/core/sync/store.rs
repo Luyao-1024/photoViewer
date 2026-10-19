@@ -117,6 +117,7 @@ const INTERRUPTED_RUN: &str = "sync.interrupted_run";
 
 #[derive(Debug)]
 pub enum SyncWrite {
+    ResumeLocalChanges,
     BeginReset {
         token: String,
     },
@@ -654,6 +655,7 @@ impl SyncStore {
 
 pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWriteResult> {
     match command {
+        SyncWrite::ResumeLocalChanges => reset::resume_local_changes(pool),
         SyncWrite::BeginReset { token } => reset::begin(pool, token),
         SyncWrite::FinishReset { token } => reset::finish(pool, token),
         SyncWrite::FailReset { token, error } => reset::fail(pool, token, error),

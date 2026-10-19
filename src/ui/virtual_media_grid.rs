@@ -10,6 +10,7 @@ mod layout_index;
 mod mode;
 mod model;
 mod range_cache;
+mod sync_updates;
 
 use crate::core::i18n::tr;
 use crate::core::identity::MediaId;
@@ -306,6 +307,10 @@ mod imp {
         /// generic metadata reload and update resident favorite badges in
         /// place instead.
         pub suppress_shared_projection_until: Cell<Option<std::time::Instant>>,
+        pub suppress_sync_projection: Cell<bool>,
+        pub pending_sync_items: RefCell<HashMap<i64, (MediaItem, bool)>>,
+        pub sync_update_source: RefCell<Option<glib::SourceId>>,
+        pub sync_update_loading: Cell<bool>,
         pub(super) thumb_batcher: RefCell<ThumbnailBatcher>,
     }
 
@@ -349,6 +354,10 @@ mod imp {
                 last_top_slot: Cell::new(0),
                 desired_window: Cell::new(None),
                 suppress_shared_projection_until: Cell::new(None),
+                suppress_sync_projection: Cell::new(false),
+                pending_sync_items: RefCell::new(HashMap::new()),
+                sync_update_source: RefCell::new(None),
+                sync_update_loading: Cell::new(false),
                 thumb_batcher: RefCell::new(ThumbnailBatcher::default()),
             }
         }
@@ -374,6 +383,9 @@ mod imp {
 
     impl ObjectImpl for VirtualMediaGrid {
         fn dispose(&self) {
+            if let Some(source) = self.sync_update_source.borrow_mut().take() {
+                source.remove();
+            }
             if let Some(source) = self.metadata_reload_source.borrow_mut().take() {
                 if glib::MainContext::default()
                     .find_source_by_id(&source)
@@ -807,8 +819,7 @@ impl VirtualMediaGrid {
             .iter()
             .filter_map(|cell| cell.binding.borrow().as_ref().cloned())
             .filter(|binding| binding.layout_generation == generation)
-            .map(|binding| binding.slot)
-            .filter(|slot| matches!(model.slot_state(*slot), Some(GridSlotState::Ready { .. })))
+            .filter_map(|binding| model.slot_for_media_id(binding.media_id()))
             .min()
     }
 
@@ -849,12 +860,9 @@ impl VirtualMediaGrid {
                 return None;
             }
             let binding = cell.binding.borrow().as_ref().cloned()?;
-            (binding.layout_generation == generation
-                && matches!(
-                    model.slot_state(binding.slot),
-                    Some(GridSlotState::Ready { .. })
-                ))
-            .then_some(binding.slot)
+            (binding.layout_generation == generation)
+                .then(|| model.slot_for_media_id(binding.media_id()))
+                .flatten()
         })
     }
 
@@ -923,6 +931,9 @@ impl VirtualMediaGrid {
     }
 
     fn handle_shared_projection_items_changed(&self) {
+        if self.imp().suppress_sync_projection.get() {
+            return;
+        }
         let now = std::time::Instant::now();
         if self
             .imp()

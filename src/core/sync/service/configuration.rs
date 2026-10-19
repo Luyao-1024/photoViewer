@@ -183,6 +183,7 @@ impl SyncService {
         if self.store.reset_pending()? {
             return self.start_reset_worker();
         }
+        self.store.resume_local_changes()?;
         for job in self.store.list_jobs()? {
             self.request_job_sync(job.id)?;
         }

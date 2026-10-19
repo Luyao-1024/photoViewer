@@ -338,6 +338,11 @@ fn note(
     category: ChangeCategory,
     stamp: &EditEventStamp,
 ) -> Result<Option<DirtyOutcome>> {
+    // Account selection survives global Off. It must not stand in for consent
+    // to record new local changes while history is being cleared or stays off.
+    if super::reset::pending(tx)? || !super::reset::local_changes_enabled(tx)? {
+        return Ok(None);
+    }
     // Only enabled jobs whose local root actually covers this media may claim
     // it. Enrolling a path is an explicit user choice, never a side effect.
     let mut entries: Vec<(i64, Option<i64>)> = Vec::new();
@@ -381,9 +386,11 @@ fn note(
         }
         let entry_id = match entry_id {
             Some(id) => id,
-            // The media is inside a job root but has no entry row yet. It is
-            // enrolled as a new obligation rather than silently ignored, which
-            // is the only way a photo the user selected ever reaches the cloud.
+            // Off discarded the old sync history. Startup pruning can observe
+            // files removed during that interval only after opt-in; an index
+            // row alone cannot establish a cloud deletion obligation.
+            None if category == ChangeCategory::Deletion => continue,
+            // New content and edits inside the selected scope enroll normally.
             None => {
                 let path = media_path(tx, media_id)?;
                 let relative = relative_under(tx, job_id, &path)?;

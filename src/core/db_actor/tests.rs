@@ -271,3 +271,44 @@ async fn mark_thumbnails_generated_runs_through_db_actor() {
 
     assert_eq!(db::count_thumbnail_generated(&pool).unwrap(), 1);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn visible_photo_thumbnail_completion_emits_a_targeted_update() {
+    let sandbox = crate::testing::Sandbox::install();
+    let dir = sandbox.scratch("actor-sync-thumbnail-event");
+    let pool = db::init_pool(&dir.path().join("library.db")).unwrap();
+    let (events, mut rx) = DomainEventSender::new();
+    let actor = start_db_actor(pool.clone(), events);
+    actor
+        .execute(DbCommand::UpsertMediaBatch {
+            source: ChangeSource::StartupScan,
+            items: vec![new_item(dir.path().join("existing.jpg"))],
+        })
+        .await
+        .unwrap();
+    let media = db::list_all_media(&pool).unwrap().remove(0);
+    while rx.try_recv().is_ok() {}
+    // The old publication was superseded. Even this late completion must not
+    // tell consumers that an already visible photo is a new insertion.
+    actor
+        .execute(DbCommand::Sync(
+            crate::core::sync::store::SyncWrite::Runtime(Box::new(
+                crate::core::sync::store::runtime::Command::ThumbnailReady {
+                    publication: "superseded-publication".into(),
+                    media: media.id,
+                    mtime_ns: 0,
+                    asset: "superseded-thumbnail".into(),
+                },
+            )),
+        ))
+        .await
+        .unwrap();
+    let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+    assert!(events.iter().any(|event| matches!(event,
+        DomainEvent::MediaUpdated { source: ChangeSource::Synchronization, items, fields }
+            if items.len() == 1 && items[0].id == media.id && fields.thumbnail && !fields.metadata
+    )));
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event, DomainEvent::MediaUpserted { .. })));
+}

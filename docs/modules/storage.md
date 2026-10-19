@@ -36,6 +36,14 @@ bodies in paths such as `src/core/metadata/tests.rs`,
 
 Background cache bookkeeping repairs both directions: an existing Small/Medium/Large cache restores `thumbnail_ready`, while a missing cache invalidates it. It probes paths and source stamps without decoding originals, then writes through DbActor only if the captured URI, mtime and size still match. Foreground disk hits keep their write-free path.
 
+Native original downloads retain the database's pre-download modification time:
+the private publication file receives that mtime before its cache is imported
+and the file is renamed into the library. Admission reads back the same stamp,
+including nanoseconds. Undated photos keep their fallback sort order, and the
+next scanner pass sees an unchanged size/mtime pair. Replacing a downloaded
+thumbnail evicts only that source's in-memory cache entries, preserving all
+unrelated painted photos and caches.
+
 Native uploads consume the existing thumbnail cache through
 `thumbnails::cached_upload_thumbnail`, preferring Large/Medium/Small. A missing
 cache returns no thumbnail without decoding media or scheduling generation;

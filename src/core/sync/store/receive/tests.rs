@@ -1795,6 +1795,14 @@ fn adoption_does_not_settle_shared_assets_still_needed_by_another_photo() {
     assert!(resources
         .iter()
         .all(|resource| resource.state == super::super::ResourceState::Pending));
+    let borrowed_caches: i64 = pool.get().unwrap().query_row(
+        "SELECT count(*) FROM sync_native_resources WHERE job_id=?1 AND verified_cache IS NOT NULL",
+        [job.id], |r| r.get(0),
+    ).unwrap();
+    assert_eq!(
+        borrowed_caches, 0,
+        "shared assets must lose another photo's local cache claim"
+    );
 }
 
 #[test]
@@ -1943,4 +1951,63 @@ fn unchanged_confirmed_receive_restores_location_without_clearing_edits() {
             }
         }
     }
+}
+
+#[test]
+fn off_history_allows_cloud_download_after_startup_pruning() {
+    let (store, pool, job) = store_with_job("off-delete-receive");
+    enrol_local_file(&pool, &job, "camera/one.jpg");
+    store.begin_reset().unwrap();
+    let reset = store.reset_intent().unwrap().unwrap();
+    assert!(store.finish_reset(&reset.token).unwrap());
+    std::fs::remove_file(job.local_root.join("camera/one.jpg")).unwrap();
+
+    // Opt-in can happen before startup notices an external deletion. The old
+    // media index survives Off; its former sync entry deliberately does not.
+    store.resume_local_changes().unwrap();
+    let removed = crate::core::db::delete_live_media_by_paths(
+        &pool,
+        &[job.local_root.join("camera/one.jpg")],
+        crate::core::db::DeletionEvidence::PruneVerified,
+    )
+    .unwrap();
+    assert_eq!(removed.len(), 1);
+    assert!(store.uplink_view(job.id).unwrap().is_empty());
+
+    begin(&store, &job, "scope-after-off");
+    let photo = empty_photo("a1", "camera/one.jpg");
+    seed_inbox_revisions(&pool, &job, &photo);
+    store
+        .promote_remote_graph(
+            job.id,
+            graph(vec![photo.clone()]),
+            "zone.target",
+            no_local_digests(),
+        )
+        .unwrap();
+    let conn = pool.get().unwrap();
+    let (media, conflicts): (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT count(*) FROM media_items WHERE storage_location=2),
+                (SELECT count(*) FROM sync_conflicts WHERE state='open')",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(media, 1, "the cloud photo must return to the library");
+    assert_eq!(conflicts, 0, "Off-era deletion is not a content conflict");
+    let publications = store.pending_publications(job.id).unwrap();
+    assert_eq!(publications.len(), 1);
+    assert_eq!(publications[0].photo_id, photo.photo_id);
+    let resources: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sync_native_resources WHERE job_id=?1 AND state='pending'",
+            [job.id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        resources, 2,
+        "both photo resources must be queued for download"
+    );
 }

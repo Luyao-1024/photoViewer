@@ -229,6 +229,13 @@ fn apply_domain_event_to_legacy_ui(
         event_label,
         media_list.n_items()
     );
+    if window
+        .upgrade()
+        .is_some_and(|window| window.apply_synchronization_media_event(event, media_list))
+    {
+        album_refresh.mark_albums_dirty_async();
+        return;
+    }
     match event {
         DomainEvent::ScanPhase { active, error } => {
             // The window owns the phase so a page created after the scan starts

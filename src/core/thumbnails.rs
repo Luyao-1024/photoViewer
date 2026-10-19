@@ -910,6 +910,27 @@ impl ThumbnailLoader {
         cache_key_str(uri, size, mtime)
     }
 
+    /// A downloaded thumbnail may replace bytes while preserving the original
+    /// file's mtime. Evict only that source's memory copies; its new disk cache
+    /// and all unrelated photos remain available.
+    pub fn invalidate_cached_thumbnail(&self, uri: &str, mtime: Option<SystemTime>) {
+        if let Ok(mut state) = self.state.lock() {
+            for size in [
+                ThumbnailSize::Small,
+                ThumbnailSize::Medium,
+                ThumbnailSize::Large,
+            ] {
+                if let Some(key) = cache_key_str(uri, size, mtime) {
+                    state.mem_cache.pop(&key);
+                    state.prewarm_mem_cache.pop(&key);
+                }
+            }
+            if let Some(key) = cache::exif_cache_key(uri, mtime) {
+                state.exif_cache.pop(&key);
+            }
+        }
+    }
+
     /// 清空内存缓存（LRU 缓存和在途去重映射）。
     ///
     /// 用于清理功能，强制后续请求重新从磁盘加载缩略图。

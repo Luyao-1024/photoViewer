@@ -150,8 +150,8 @@ impl VirtualMediaModel {
     }
 
     /// Replaces the physical layout after a complete metadata generation has
-    /// arrived.  This is the only operation allowed to change `n_items`; range
-    /// results use local replacement signals instead.
+    /// arrived. Incremental admissions use `insert_ready_item`; range results
+    /// use local replacement signals without changing `n_items`.
     pub fn replace_layout(&self, layout: VirtualGridLayoutIndex, generation: u64) {
         let (old_slots, new_slots) = {
             let mut state = self.imp().state.borrow_mut();
@@ -243,6 +243,106 @@ impl VirtualMediaModel {
             (old_slots, state.layout.slot_count())
         };
         self.items_changed(0, old_slots, new_slots);
+    }
+
+    /// Insert newly visible media without replacing unaffected date sections.
+    /// A section's trailing filler is replaced together with its shifted tail;
+    /// later sections keep their GObjects and their already painted tiles.
+    pub fn insert_ready_item(&self, layout: VirtualGridLayoutIndex, offset: u32, item: MediaItem) {
+        let (start, removed, added) = {
+            let mut state = self.imp().state.borrow_mut();
+            let old_layout = state.layout.clone();
+            let start = layout
+                .slot_for_media_offset(offset)
+                .expect("inserted media offset");
+            let section = layout
+                .sections()
+                .iter()
+                .find(|span| span.media_start <= offset && offset < span.media_end())
+                .expect("inserted media section");
+            let old_end = old_layout
+                .sections()
+                .iter()
+                .find(|old| old.key == section.key)
+                .map_or(start, |old| old.slot_end());
+            let removed = old_end.saturating_sub(start);
+            let added = section.slot_end().saturating_sub(start);
+            let ready = std::mem::take(&mut state.ready_by_offset);
+            state.ready_by_offset = ready
+                .into_iter()
+                .map(|(old, item)| (if old >= offset { old + 1 } else { old }, item))
+                .collect();
+            state.ready_by_offset.insert(offset, item);
+            state.layout = layout.clone();
+            let objects = std::mem::take(&mut state.slot_objects);
+            for (old_slot, weak) in objects {
+                if (start..old_end).contains(&old_slot) {
+                    continue;
+                }
+                let new_slot = match old_layout.slot_at(old_slot) {
+                    Some(GridSlot::MediaOffset(old)) => {
+                        layout.slot_for_media_offset(if old >= offset { old + 1 } else { old })
+                    }
+                    Some(GridSlot::Filler { section }) => {
+                        let old = &old_layout.sections()[section];
+                        let filler = old_slot - old.slot_start - old.media_len;
+                        layout
+                            .sections()
+                            .iter()
+                            .find(|span| span.key == old.key)
+                            .filter(|span| filler < span.filler_len())
+                            .map(|span| span.slot_start + span.media_len + filler)
+                    }
+                    None => None,
+                };
+                if let Some(new_slot) = new_slot {
+                    if let Some(object) = weak.upgrade() {
+                        if let Some(snapshot) = slot_state_at(&state, new_slot) {
+                            *object.borrow_mut::<GridSlotState>() = snapshot;
+                        }
+                    }
+                    state.slot_objects.insert(new_slot, weak);
+                }
+            }
+            (start, removed, added)
+        };
+        self.items_changed(start, removed, added);
+    }
+
+    /// Availability events can replace cached thumbnail bytes without changing
+    /// the media's timestamp or other scalar fields. Rebind this slot only.
+    pub fn refresh_ready_item(&self, offset: u32, item: MediaItem) {
+        let slot = {
+            let mut state = self.imp().state.borrow_mut();
+            let Some(slot) = state.layout.slot_for_media_offset(offset) else {
+                return;
+            };
+            state.ready_by_offset.insert(offset, item);
+            slot
+        };
+        self.emit_replacements(vec![slot]);
+    }
+
+    pub fn slot_for_media_id(&self, id: MediaId) -> Option<u32> {
+        let state = self.imp().state.borrow();
+        state
+            .ready_by_offset
+            .iter()
+            .find(|(_, item)| item.id == id.get())
+            .and_then(|(offset, _)| state.layout.slot_for_media_offset(*offset))
+    }
+
+    pub fn ready_ranges(&self) -> Vec<Range<u32>> {
+        let state = self.imp().state.borrow();
+        let mut ranges: Vec<Range<u32>> = Vec::new();
+        for offset in state.ready_by_offset.keys().copied() {
+            if let Some(last) = ranges.last_mut().filter(|last| last.end == offset) {
+                last.end += 1;
+            } else {
+                ranges.push(offset..offset + 1);
+            }
+        }
+        ranges
     }
 
     /// Apply one repository range.  Only positions whose `MediaItem` actually

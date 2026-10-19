@@ -204,6 +204,8 @@ pub struct Shell {
     pub loader: Arc<ThumbnailLoader>,
     pub media_list: gtk::gio::ListStore,
     pub db_actor: photo_viewer::core::db_actor::DbActorHandle,
+    pub db_events:
+        Option<std::cell::RefCell<tokio::sync::mpsc::Receiver<photo_viewer::core::DomainEvent>>>,
     pub items: Vec<MediaItem>,
     pub window: MainWindow,
     pub photos: PhotosPage,
@@ -226,6 +228,11 @@ impl Shell {
     /// observable in the pixels, in the header date, and by file identity.
     pub fn with_photos(count: usize) -> Self {
         build(count, false)
+    }
+
+    /// Keep actor events for journeys that exercise background UI updates.
+    pub fn with_photos_and_events(count: usize) -> Self {
+        build_with_events(count, false, true)
     }
 
     /// A large library of distinct files, cycling the committed real JPEGs.
@@ -464,6 +471,10 @@ impl Shell {
 }
 
 fn build(photo_count: usize, repeat_fixtures: bool) -> Shell {
+    build_with_events(photo_count, repeat_fixtures, false)
+}
+
+fn build_with_events(photo_count: usize, repeat_fixtures: bool, capture_events: bool) -> Shell {
     // The work root lives inside the project, under the gitignored `target/`, so
     // a failing run leaves its tree where a developer can look at it instead of
     // scattering directories through `$HOME`. Only the run root varies — the
@@ -496,7 +507,7 @@ fn build(photo_count: usize, repeat_fixtures: bool) -> Shell {
     for item in &items {
         media_list.append(&glib::BoxedAnyObject::new(item.clone()));
     }
-    let (event_sender, _event_rx) = photo_viewer::core::DomainEventSender::new();
+    let (event_sender, event_rx) = photo_viewer::core::DomainEventSender::new();
     let db_actor = photo_viewer::core::start_db_actor(pool.clone(), event_sender);
 
     // The id has to be unique across *processes*, not just across shells in this
@@ -573,6 +584,7 @@ fn build(photo_count: usize, repeat_fixtures: bool) -> Shell {
         loader,
         media_list,
         db_actor,
+        db_events: capture_events.then(|| std::cell::RefCell::new(event_rx)),
         items,
         window,
         photos,

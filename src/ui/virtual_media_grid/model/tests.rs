@@ -254,3 +254,45 @@ fn favorite_update_keeps_resident_slot_identity_and_emits_no_model_change() {
         "favorite-only updates must not trigger GtkGridView rebinding"
     );
 }
+
+#[test]
+fn sync_insertion_preserves_objects_outside_the_changed_date_section() {
+    let model = VirtualMediaModel::new(layout());
+    model.replace_ready_range(0..4, vec![item(4), item(3), item(2), item(1)]);
+    let first = model.item(0).unwrap();
+    let older_section = model.item(4).unwrap();
+    let changes = std::rc::Rc::new(RefCell::new(Vec::new()));
+    model.connect_items_changed({
+        let changes = changes.clone();
+        move |_, position, removed, added| changes.borrow_mut().push((position, removed, added))
+    });
+    let mut counts = HashMap::new();
+    counts.insert(layout().sections()[0].key.clone(), 4);
+    counts.insert(layout().sections()[1].key.clone(), 1);
+    model.insert_ready_item(VirtualGridLayoutIndex::new(&counts, 2), 1, item(5));
+    assert_eq!(*changes.borrow(), vec![(1, 3, 3)]);
+    assert_eq!(model.item(0).unwrap(), first);
+    assert_eq!(model.item(4).unwrap(), older_section);
+    assert_eq!(model.slot_state(1).unwrap().media_item().unwrap().id, 5);
+    assert_eq!(model.slot_state(2).unwrap().media_item().unwrap().id, 3);
+    assert_eq!(model.slot_state(3).unwrap().media_item().unwrap().id, 2);
+}
+
+#[test]
+fn sync_insertion_moves_later_sections_without_replacing_their_objects() {
+    let model = VirtualMediaModel::new(layout());
+    model.replace_ready_range(0..4, vec![item(4), item(3), item(2), item(1)]);
+    let older_section = model.item(4).unwrap();
+    let mut counts = HashMap::new();
+    counts.insert(layout().sections()[0].key.clone(), 4);
+    counts.insert(layout().sections()[1].key.clone(), 1);
+    model.insert_ready_item(VirtualGridLayoutIndex::new(&counts, 2), 3, item(5));
+    counts.insert(layout().sections()[0].key.clone(), 5);
+    model.insert_ready_item(VirtualGridLayoutIndex::new(&counts, 2), 4, item(6));
+    assert_eq!(model.item(6).unwrap(), older_section);
+    let object = older_section.downcast::<glib::BoxedAnyObject>().unwrap();
+    let snapshot = object.borrow::<GridSlotState>();
+    assert_eq!(snapshot.slot(), 6);
+    assert_eq!(snapshot.media_offset(), Some(5));
+    assert_eq!(snapshot.media_item().unwrap().id, 1);
+}

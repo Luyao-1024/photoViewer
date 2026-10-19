@@ -56,7 +56,7 @@ Protocol definitions remain exclusively in the sibling server repository.
 
 ## Relational persistence and batch timing
 
-Cloud-sync tables contain scalar columns and typed relations, including pending records, confirmed baselines, account capabilities, drafts and recovery evidence. The one-time legacy conversion preserves unfinished obligations and exact issued requests; [storage rules and indexes](native-sync-relational.md) describe the boundary. A 100-record batch targets one second from HTTP request through local application and progress checkpoint. Page logs expose HTTP, persistence, application and checkpoint time separately.
+Cloud-sync tables contain scalar columns and typed relations, including pending records, confirmed baselines, account capabilities, drafts and recovery evidence. The one-time legacy conversion preserves unfinished obligations and exact issued requests; [storage rules and indexes](native-sync-relational.md) describe the boundary. A 100-record batch targets one second from HTTP request through local application and progress checkpoint. Page logs expose HTTP, persistence, application and checkpoint time separately. Shared-asset reconciliation locates baseline owners through the indexed asset field before looking for pending publications; a growing fresh-download queue does not repeatedly scan unrelated entries and publications.
 
 ## Key Files
 
@@ -112,6 +112,20 @@ upload failures also log `WARN` with the entry and cycle IDs.
 Every full-snapshot page and delta page logs its received/saved record counts,
 page number, zone, continuation presence and elapsed time **after persistence**.
 These events report durable metadata receipt, not completed photo publication.
+A thumbnail that first makes a photo displayable emits `MediaUpserted`; original
+publication or thumbnail updates to an already visible photo emit a targeted
+`MediaUpdated` with availability fields. Photos and album grids apply these
+through the [incremental browsing path](browsing.md), without a whole-layout
+replacement for each completed resource.
+
+A nonempty resource batch logs its requested and already-staged counts before
+work starts. Resuming checks staged files against the persisted size/SHA-256
+before credentials or HTTP; valid bytes are reused. Each resource reconciles
+only publications referencing that asset, with a final whole-job reconciliation
+at the end of the batch. Already displayed thumbnails therefore do not cause
+repeated scans of every publication before fresh downloads can proceed. The
+terminal download summary reports reused resources separately from new fetches.
+
 Resource download logs appear after verification/staging; successfully admitted
 photo pairs report publication batch counts. Nonempty download batches report
 requested/fetched/admitted/failed counts and elapsed time. No byte-progress loop,
@@ -173,8 +187,16 @@ sync entry, cloud IDs, revisions and deletion event durably at dirty=4. Ordinary
 scans, restarts, retries and later remote edits never discard this record. A
 successful guarded cloud deletion removes it; an explicit account switch or
 global Off may clear it. Failed physical deletion creates no deletion intent.
-A never-published item with no issued create is settled as already absent only
-after the current-watermark upload gate succeeds.
+A never-published item that already has a sync entry is settled as already
+absent only after the current-watermark upload gate succeeds. Deleting a media
+index row that has never had a sync entry does not enroll it for deletion.
+
+Global Off clears history and durably disables local-change tracking, independently
+of the selected account. Neither cleanup nor later edits while Off may recreate
+entries. Tracking resumes only after an explicit opt-in and the reset barrier has
+finished. Files removed while Off may still have stale media index rows at the
+next startup; pruning those rows must not create deletion obligations. A fresh
+receive can therefore download the cloud photos again.
 
 
 Dirty is a state on the existing record, never a queue: 0=CLEAN, 1=NEW,

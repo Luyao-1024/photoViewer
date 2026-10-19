@@ -1226,6 +1226,10 @@ impl PhotosPage {
         self.apply_overview_sync_icon(sync.status, sync.cause);
     }
 
+    pub(crate) fn synchronization_grids(&self) -> Vec<VirtualMediaGrid> {
+        self.imp().grids.borrow().clone()
+    }
+
     pub(crate) fn refresh_day_sync_badges(&self) {
         if let Some(grid) = self.imp().grids.borrow().get(2) {
             grid.refresh_sync_badges();

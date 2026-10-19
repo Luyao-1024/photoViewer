@@ -86,7 +86,10 @@ pub enum PublicationCommand {
     /// Read the obligations a generation owes, original before thumbnail.
     Outstanding { job_id: i64 },
     /// Read the publications this job has not finished.
-    Intents { job_id: i64 },
+    Intents {
+        job_id: i64,
+        asset_id: Option<String>,
+    },
     /// Record that a role's bytes are staged and verified.
     Stage {
         job_id: i64,
@@ -258,7 +261,18 @@ impl SyncStore {
     }
 
     pub fn pending_publications(&self, job_id: i64) -> Result<Vec<PublicationIntent>> {
-        match self.write_publication(PublicationCommand::Intents { job_id })? {
+        self.publications_for_asset(job_id, None)
+    }
+
+    pub(crate) fn publications_for_asset(
+        &self,
+        job_id: i64,
+        asset_id: Option<&str>,
+    ) -> Result<Vec<PublicationIntent>> {
+        match self.write_publication(PublicationCommand::Intents {
+            job_id,
+            asset_id: asset_id.map(str::to_owned),
+        })? {
             PublicationOutcome::Intents(intents) => Ok(intents),
             _ => Err(AppError::Backend(
                 "reading pending publications returned an unexpected result".into(),
@@ -330,7 +344,7 @@ pub(super) fn execute(pool: &DbPool, command: &PublicationCommand) -> Result<Pub
             }
             Ok(PublicationOutcome::Outstanding(obligations))
         }
-        PublicationCommand::Intents { job_id } => {
+        PublicationCommand::Intents { job_id, asset_id } => {
             let conn = pool.get()?;
             let mut stmt = conn.prepare(
                 "SELECT id, publication_id, job_id, entry_id, photo_id, master_id,
@@ -338,9 +352,10 @@ pub(super) fn execute(pool: &DbPool, command: &PublicationCommand) -> Result<Pub
                         original_staging, thumbnail_staging
                  FROM sync_publications
                  WHERE job_id = ?1 AND state IN ('pending','publishing')
+                   AND (?2 IS NULL OR original_asset_id=?2 OR thumbnail_asset_id=?2)
                  ORDER BY id",
             )?;
-            let rows = stmt.query_map([job_id], |row| {
+            let rows = stmt.query_map(rusqlite::params![job_id, asset_id], |row| {
                 Ok(PublicationIntent {
                     id: row.get(0)?,
                     publication_id: row.get(1)?,

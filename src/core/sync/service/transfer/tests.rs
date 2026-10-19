@@ -410,3 +410,161 @@ fn metadata_thumbnail_and_original_advance_independent_presence_fields() {
         0
     );
 }
+
+#[test]
+fn downloaded_original_preserves_database_mtime_and_undated_sorting() {
+    for expected_ns in [0_i64, 1_700_000_000_123_456_789] {
+        let f = fixture(&format!("native-mtime-{expected_ns}"));
+        let original = jpeg(0x446688FF);
+        let thumbnail = jpeg(0x223344FF);
+        let photo = project(&f, "one", &original, &thumbnail);
+        let target = f.root.join("camera/photo.jpg");
+        let uri = crate::core::file_uri::from_path(&target);
+        // This is the pre-download metadata, including a nanosecond timestamp.
+        // A zero timestamp is a valid existing anchor, not a missing value.
+        f.service
+            .pool()
+            .get()
+            .unwrap()
+            .execute(
+                "UPDATE media_items SET file_mtime=?2,file_mtime_ns=?3 WHERE uri=?1",
+                rusqlite::params![uri, expected_ns.div_euclid(1_000_000_000), expected_ns],
+            )
+            .unwrap();
+        let before = crate::core::db::get_media_item_by_uri(f.service.pool(), &uri)
+            .unwrap()
+            .unwrap();
+        assert!(before.taken_at.is_none());
+        stage(&f, &photo, &original, &thumbnail);
+        let report = admit(&f);
+        assert_eq!(report.admitted, 1, "{report:?}");
+        assert!(report.failures.is_empty(), "{report:?}");
+        let after = crate::core::db::get_media_item_by_uri(f.service.pool(), &uri)
+            .unwrap()
+            .unwrap();
+        let disk: chrono::DateTime<chrono::Utc> = std::fs::metadata(&target)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .into();
+        assert_eq!(
+            disk, before.file_mtime,
+            "download must restore the database timestamp on disk"
+        );
+        assert_eq!(after.file_mtime, before.file_mtime);
+        assert_eq!(
+            after.sort_datetime(),
+            before.sort_datetime(),
+            "missing capture time must not sort by download time"
+        );
+        assert!(after.taken_at.is_none());
+        assert_eq!(std::fs::read(&target).unwrap(), original);
+        let backend = crate::core::backend::local::LocalBackend::new(f.service.pool().clone());
+        assert_eq!(
+            backend.scan_and_upsert_dir(&f.root).unwrap(),
+            0,
+            "the next scan must see unchanged file metadata"
+        );
+        assert!(f.service.store().uplink_view(f.job.id).unwrap().is_empty());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn staged_download_resume_reuses_verified_bytes_before_credentials_or_http() {
+    let mut f = fixture("native-resume-local-first");
+    let original = jpeg(0x446688FF);
+    let thumbnail = jpeg(0x223344FF);
+    let photo = project(&f, "one", &original, &thumbnail);
+    stage(&f, &photo, &original, &thumbnail);
+    let work = f
+        .service
+        .store()
+        .outstanding_resources(f.job.id)
+        .unwrap()
+        .into_iter()
+        .find(|work| work.asset_id == photo.original.asset_id)
+        .unwrap();
+    let credential_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    f.service.credential_reader = std::sync::Arc::new({
+        let calls = credential_calls.clone();
+        move |_| {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(error(
+                "network credentials must not be needed for staged bytes",
+            ))
+        }
+    });
+    assert!(f
+        .service
+        .fetch_one(&work, &mut TransferReport::default())
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        credential_calls.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+    std::fs::write(work.staging_path.as_ref().unwrap(), b"corrupted staging").unwrap();
+    assert!(f
+        .service
+        .fetch_one(&work, &mut TransferReport::default())
+        .await
+        .is_err());
+    assert_eq!(
+        credential_calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "corrupt cached bytes must require a real replacement download"
+    );
+}
+
+#[test]
+fn staged_download_completion_only_checks_its_own_photo_publications() {
+    let f = fixture("native-resume-targeted-admission");
+    let original = jpeg(0x446688FF);
+    let thumbnail = jpeg(0x223344FF);
+    let first = project(&f, "one", &original, &thumbnail);
+    let mut other = first.clone();
+    other.photo_id = "other-photo".into();
+    other.master_id = "other-master".into();
+    other.relative_path = "camera/other.jpg".into();
+    other.original.asset_id = "other-original".into();
+    other.thumbnail.asset_id = "other-thumbnail".into();
+    f.service
+        .store()
+        .promote_remote_graph(
+            f.job.id,
+            crate::core::sync::native::records::RemoteGraph {
+                photos: vec![first.clone(), other.clone()],
+                ..Default::default()
+            },
+            "target-two",
+            no_local_digests(),
+        )
+        .unwrap();
+    stage(&f, &first, &original, &thumbnail);
+    let bad_thumbnail = f
+        .service
+        .stage_verified(&other.thumbnail.asset_id, AssetRole::Thumbnail, &thumbnail)
+        .unwrap();
+    f.service
+        .store()
+        .stage_resource(
+            f.job.id,
+            &other.thumbnail.asset_id,
+            "thumbnail",
+            &bad_thumbnail.to_string_lossy(),
+        )
+        .unwrap();
+    std::fs::write(&bad_thumbnail, b"corrupt unrelated thumbnail").unwrap();
+    let mut report = TransferReport::default();
+    f.service
+        .admit_publications_for_asset(f.job.id, Some(&first.original.asset_id), &mut report)
+        .unwrap();
+    assert_eq!(report.admitted, 1, "{report:?}");
+    assert!(report.failures.is_empty(), "{report:?}");
+    assert_eq!(
+        std::fs::read(f.root.join(&first.relative_path)).unwrap(),
+        original
+    );
+    assert!(!f.root.join(&other.relative_path).exists());
+}
