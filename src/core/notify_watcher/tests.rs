@@ -3,11 +3,50 @@ use crate::core::db;
 use crate::core::events::DomainEvent;
 use crate::core::media::NewMediaItem;
 use chrono::Utc;
-use notify::{event::RemoveKind, Event};
+use notify::{
+    event::{RemoveKind, RenameMode},
+    Event,
+};
 
 fn actor_for(pool: db::DbPool) -> (DbActorHandle, tokio::sync::mpsc::Receiver<DomainEvent>) {
     let (sender, rx) = crate::core::events::DomainEventSender::new();
     (crate::core::db_actor::start_db_actor(pool, sender), rx)
+}
+
+fn insert_row(pool: &db::DbPool, path: &Path, folder_path: &Path) {
+    db::insert_media_item(
+        pool,
+        &NewMediaItem {
+            uri: format!("file://{}", path.display()),
+            path: path.to_path_buf(),
+            folder_path: folder_path.to_path_buf(),
+            mime_type: "image/jpeg".into(),
+            media_subkind: "standard".into(),
+            media_attributes: "{}".into(),
+            width: None,
+            height: None,
+            video_duration_secs: None,
+            taken_at: None,
+            file_mtime: Utc::now(),
+            file_size: 1,
+            blake3_hash: "hash".into(),
+        },
+    )
+    .unwrap();
+}
+
+fn write_jpeg(path: &Path) {
+    image::RgbImage::from_fn(8, 8, |_, _| image::Rgb([128, 128, 128]))
+        .save(path)
+        .unwrap();
+}
+
+fn event(kind: EventKind, path: PathBuf) -> Result<Event, notify::Error> {
+    Ok(Event {
+        kind,
+        paths: vec![path],
+        attrs: Default::default(),
+    })
 }
 
 #[test]
@@ -315,4 +354,115 @@ fn effective_exclusions_include_paths_added_after_watcher_start() {
         &startup_excluded,
         &current_excluded
     ));
+}
+
+/// File managers report a deleted folder as one event for the folder itself.
+/// The folder path has no media extension, so the old extension prefilter threw
+/// the event away and the folder's photos stayed in the grid.
+#[test]
+fn remove_folder_event_deletes_all_rows_below_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let album = dir.path().join("album");
+    let nested = album.join("nested");
+    std::fs::create_dir_all(&nested).unwrap();
+    let inside = album.join("a.jpg");
+    let deep = nested.join("b.jpg");
+    let outside = dir.path().join("outside.jpg");
+    for path in [&inside, &deep, &outside] {
+        std::fs::write(path, b"x").unwrap();
+    }
+
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    insert_row(&pool, &inside, &album);
+    insert_row(&pool, &deep, &nested);
+    insert_row(&pool, &outside, dir.path());
+    std::fs::remove_dir_all(&album).unwrap();
+
+    let (db_actor, mut rx) = actor_for(pool.clone());
+    let mut dirty = false;
+    flush_event_burst(
+        &db_actor,
+        vec![event(EventKind::Remove(RemoveKind::Folder), album.clone())],
+        &[],
+        &[],
+        &mut dirty,
+    );
+
+    let remaining = db::list_all_media(&pool).unwrap();
+    assert_eq!(remaining.len(), 1, "only the outside file may survive");
+    assert_eq!(remaining[0].path, outside);
+    let DomainEvent::MediaRemoved { mut uris, .. } = rx.try_recv().unwrap() else {
+        panic!("expected the folder's rows to be removed");
+    };
+    uris.sort();
+    let mut expected = vec![
+        format!("file://{}", inside.display()),
+        format!("file://{}", deep.display()),
+    ];
+    expected.sort();
+    assert_eq!(uris, expected);
+}
+
+/// Renaming a folder inside the library reports only the two folder paths.
+/// The old rows must go and the new location must be indexed from disk,
+/// otherwise the photos vanish until the next full scan.
+#[test]
+fn renamed_folder_moves_rows_to_the_new_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let old = dir.path().join("old");
+    let new = dir.path().join("new");
+    std::fs::create_dir_all(&old).unwrap();
+    let old_photo = old.join("photo.jpg");
+    write_jpeg(&old_photo);
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    insert_row(&pool, &old_photo, &old);
+
+    std::fs::rename(&old, &new).unwrap();
+
+    let (db_actor, _rx) = actor_for(pool.clone());
+    let mut dirty = false;
+    flush_event_burst(
+        &db_actor,
+        vec![
+            event(
+                EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::From)),
+                old.clone(),
+            ),
+            event(
+                EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::To)),
+                new.clone(),
+            ),
+        ],
+        &[],
+        &[],
+        &mut dirty,
+    );
+
+    let rows = db::list_all_media(&pool).unwrap();
+    assert_eq!(rows.len(), 1, "the renamed photo must stay indexed once");
+    assert_eq!(rows[0].path, new.join("photo.jpg"));
+    assert_eq!(rows[0].folder_path, new);
+}
+
+#[test]
+fn directory_deletion_is_classified_without_a_media_extension() {
+    assert!(matches!(
+        classify_path_action(
+            &EventKind::Remove(RemoveKind::Folder),
+            Path::new("/library/album")
+        ),
+        Some(PendingPathAction::DeleteTree)
+    ));
+    assert!(matches!(
+        classify_path_action(
+            &EventKind::Modify(notify::event::ModifyKind::Name(RenameMode::From)),
+            Path::new("/library/gone-album")
+        ),
+        Some(PendingPathAction::DeleteTree)
+    ));
+    assert!(classify_path_action(
+        &EventKind::Remove(RemoveKind::File),
+        Path::new("/library/notes.txt")
+    )
+    .is_none());
 }

@@ -79,6 +79,62 @@ fn upsert_from_path_skips_unsupported_extension() {
     assert!(result.is_err(), "非图片扩展名应返回错误");
 }
 
+/// File managers report a trashed folder as one move for the folder itself.
+/// Every indexed file under it must move to the Trash view, not linger in the
+/// live grid until the next startup.
+#[test]
+fn watcher_marks_rows_trashed_when_a_whole_folder_is_trashed() {
+    let sandbox = photo_viewer::testing::Sandbox::install();
+    let dir = sandbox.scratch("pv-notify-folder-trash-");
+    let album = dir.path().join("album");
+    std::fs::create_dir_all(&album).unwrap();
+    let photo = write_plain_jpeg(&album, "a.jpg");
+
+    let pool = db::init_pool(&dir.path().join("watch.db")).unwrap();
+    LocalBackend::new(pool.clone())
+        .upsert_from_path(&photo)
+        .unwrap();
+    assert_eq!(db::list_all_media(&pool).unwrap().len(), 1);
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (event_sender, _rx) = photo_viewer::core::DomainEventSender::new();
+    let db_actor = photo_viewer::core::start_db_actor(pool.clone(), event_sender);
+    let media_root = dir.path().to_path_buf();
+    let trash_roots =
+        photo_viewer::core::trash::trash_roots_for_media_roots(std::slice::from_ref(&media_root));
+    let watcher = {
+        let _guard = rt.enter();
+        photo_viewer::core::notify_watcher::start_watching(
+            db_actor,
+            vec![media_root.clone()],
+            trash_roots,
+            vec![],
+            vec![media_root],
+        )
+    };
+    std::thread::sleep(Duration::from_millis(300));
+
+    let uri = photo_viewer::core::file_uri::from_path(&album);
+    photo_viewer::core::trash::move_to_system_trash(&uri).unwrap();
+
+    let mut marked = false;
+    for _ in 0..50 {
+        std::thread::sleep(Duration::from_millis(100));
+        if db::list_all_media(&pool).unwrap().is_empty()
+            && db::list_trashed_media(&pool).unwrap().len() == 1
+        {
+            marked = true;
+            break;
+        }
+    }
+    assert!(
+        marked,
+        "the trashed folder's rows must leave the live list and appear in Trash"
+    );
+    watcher.stop();
+    rt.shutdown_timeout(Duration::from_millis(1000));
+}
+
 #[test]
 fn watcher_picks_up_new_file() {
     // 端到端：启动 watcher，丢一个文件进去，等待 upsert 出现在 DB 中。

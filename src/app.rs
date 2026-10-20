@@ -79,11 +79,12 @@ pub fn build_app_with_startup_trace(startup_trace: OperationTrace) -> adw::Appli
         let trace_for_initialize = startup_trace.clone();
         gtk::glib::MainContext::default().spawn_local(async move {
             match initialize(trace_for_initialize.clone()).await {
-                Ok((media_list, loader, pool, change_rx, db_actor, db_event_rx)) => {
+                Ok((media_list, loader, pool, change_rx, db_actor, db_event_rx, watcher)) => {
                     let window: MainWindow = app_handle
                         .active_window()
                         .and_downcast::<MainWindow>()
                         .expect("MainWindow not found");
+                    window.set_watcher(watcher);
                     let nav = window.nav_view();
                     let photos = PhotosPage::new(media_list.clone(), loader.clone());
                     // Inject the nav view so the PhotosPage can push a ViewerPage
@@ -353,6 +354,7 @@ async fn initialize(
     tokio::sync::mpsc::UnboundedReceiver<crate::core::events::DomainEvent>,
     crate::core::db_actor::DbActorHandle,
     tokio::sync::mpsc::Receiver<crate::core::events::DomainEvent>,
+    crate::core::notify_watcher::WatcherHandle,
 )> {
     let data_dir = crate::config::data_dir();
     {
@@ -405,7 +407,9 @@ async fn initialize(
     let excluded_scan_roots = crate::core::prefs::excluded_scan_roots();
     let mut watch_paths = media_roots.clone();
     watch_paths.extend(trash_roots.iter().filter(|r| r.exists()).cloned());
-    let _watcher = {
+    // The caller owns this handle for the whole application lifetime. Dropping
+    // it here would close the event channel and silently stop live watching.
+    let watcher = {
         let _stage = trace.stage("watcher_start");
         crate::core::notify_watcher::start_watching(
             db_actor.clone(),
@@ -480,6 +484,7 @@ async fn initialize(
         change_rx,
         db_actor,
         db_event_rx,
+        watcher,
     ))
 }
 

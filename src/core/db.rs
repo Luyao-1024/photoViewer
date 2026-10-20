@@ -1434,43 +1434,106 @@ pub fn delete_live_media_by_paths(
             )
             .optional()?;
         if let Some(id) = id {
-            if in_trash {
-                tx.execute(
-                    "UPDATE media_items SET trashed_at=unixepoch() WHERE id=?1",
-                    [id],
-                )?;
-                let _ = note_sync_change_in(
-                    &tx,
-                    id,
-                    crate::core::sync::store::ChangeCategory::Metadata,
-                )?;
-            } else {
-                let outcome = note_sync_change_in(
-                    &tx,
-                    id,
-                    crate::core::sync::store::ChangeCategory::Deletion,
-                )?;
-                // With sync enabled and a cloud copy still holding the
-                // original, the row must not leave the library yet: dirty=4
-                // (set by the note above) already hides it from
-                // `visible_media`, and the uplink delete confirmation removes
-                // it once the cloud copy is gone. Anything else — no enabled
-                // job covers this path, or the row never reached the cloud —
-                // has nothing to wait for and is deleted now.
-                let kept_for_uplink = outcome.is_some()
-                    && tx.execute(
-                        "UPDATE media_items SET storage_location=2 WHERE id=?1 AND storage_location=3",
-                        [id],
-                    )? > 0;
-                if !kept_for_uplink {
-                    tx.execute("DELETE FROM media_items WHERE id=?1", [id])?;
-                }
-            }
+            remove_or_trash_live_row_in(&tx, id, in_trash)?;
             uris.push(uri);
         }
     }
     tx.commit()?;
     Ok(uris)
+}
+
+/// Apply the shared outcome for one live row whose original file vanished.
+fn remove_or_trash_live_row_in(
+    tx: &rusqlite::Transaction<'_>,
+    id: i64,
+    in_trash: bool,
+) -> Result<()> {
+    if in_trash {
+        tx.execute(
+            "UPDATE media_items SET trashed_at=unixepoch() WHERE id=?1",
+            [id],
+        )?;
+        let _ = note_sync_change_in(tx, id, crate::core::sync::store::ChangeCategory::Metadata)?;
+        return Ok(());
+    }
+    let outcome = note_sync_change_in(tx, id, crate::core::sync::store::ChangeCategory::Deletion)?;
+    // With sync enabled and a cloud copy still holding the original, the row
+    // must not leave the library yet: dirty=4 (set by the note above) already
+    // hides it from `visible_media`, and the uplink delete confirmation
+    // removes it once the cloud copy is gone. Anything else — no enabled job
+    // covers this path, or the row never reached the cloud — has nothing to
+    // wait for and is deleted now.
+    let kept_for_uplink = outcome.is_some()
+        && tx.execute(
+            "UPDATE media_items SET storage_location=2 WHERE id=?1 AND storage_location=3",
+            [id],
+        )? > 0;
+    if !kept_for_uplink {
+        tx.execute("DELETE FROM media_items WHERE id=?1", [id])?;
+    }
+    Ok(())
+}
+
+/// Delete every live row at or below each vanished directory.
+///
+/// File managers report a deleted folder as one event for the folder itself,
+/// never one per child, so rows have to be found by their stored `folder_path`.
+/// A folder that the system trash knows about keeps its rows (marked trashed)
+/// exactly like a single externally trashed file; the whole folder shares one
+/// `.trashinfo`, so its provenance decides the outcome for every child.
+pub fn delete_live_media_under_folders(
+    pool: &DbPool,
+    folders: &[PathBuf],
+    evidence: DeletionEvidence,
+) -> Result<Vec<String>> {
+    let require_parent = evidence == DeletionEvidence::ParentMustSurvive;
+    let vanished = folders
+        .iter()
+        .filter_map(|folder| {
+            if (require_parent && !folder.parent().is_some_and(Path::is_dir))
+                || !std::fs::symlink_metadata(folder)
+                    .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+            {
+                return None;
+            }
+            let uri = crate::core::file_uri::from_path(folder);
+            let in_trash = crate::core::trash::trashed_file_uri(&uri).is_ok();
+            Some((folder, in_trash))
+        })
+        .collect::<Vec<_>>();
+    let mut conn = pool.get()?;
+    let tx = conn.transaction()?;
+    let mut uris = Vec::new();
+    for (folder, in_trash) in vanished {
+        let folder_str = folder.to_string_lossy();
+        let rows = live_rows_under_folder_in(&tx, &folder_str)?;
+        for (id, uri) in rows {
+            remove_or_trash_live_row_in(&tx, id, in_trash)?;
+            uris.push(uri);
+        }
+    }
+    tx.commit()?;
+    Ok(uris)
+}
+
+fn live_rows_under_folder_in(
+    tx: &rusqlite::Transaction<'_>,
+    folder: &str,
+) -> Result<Vec<(i64, String)>> {
+    // `substr` avoids LIKE's case-insensitive comparison and wildcard escaping
+    // on user-controlled path names.
+    let prefix = format!("{}/", folder.trim_end_matches('/'));
+    let mut statement = tx.prepare(
+        "SELECT id, uri FROM media_items
+         WHERE (path=?1 OR folder_path=?1 OR substr(folder_path, 1, length(?2))=?2)
+           AND trashed_at IS NULL AND storage_location<>2",
+    )?;
+    let rows = statement
+        .query_map(rusqlite::params![folder, prefix], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 /// 删除指定文件夹相册下的 live 媒体索引。只删除数据库行，不触碰磁盘文件。

@@ -121,7 +121,7 @@ impl WatcherHandle {
             .expect("watcher slot is not poisoned")
             .take();
         if taken.is_some() {
-            tracing::debug!(
+            tracing::info!(
                 target: log_targets::STORAGE,
                 "notify watcher 已停止：事件通道关闭，监听循环将退出",
             );
@@ -259,6 +259,48 @@ fn recover_from_event_overflow(
 enum PendingPathAction {
     Upsert,
     Delete,
+    /// A directory vanished; every row at or below it must go.
+    DeleteTree,
+    /// A directory arrived (a rename within the library); index its contents.
+    ScanDirectory,
+}
+
+/// Decide what one path of an event means.
+///
+/// Delete classification must not require a media extension: a file manager
+/// deleting a folder reports only the folder path, and dropping it here is why
+/// the app used to keep showing the folder's photos until the next scan.
+fn classify_path_action(kind: &EventKind, path: &Path) -> Option<PendingPathAction> {
+    match kind {
+        EventKind::Create(_) | EventKind::Modify(notify::event::ModifyKind::Data(_)) => {
+            is_supported_media_path(path).then_some(PendingPathAction::Upsert)
+        }
+        EventKind::Remove(kind) => match kind {
+            notify::event::RemoveKind::Folder => Some(PendingPathAction::DeleteTree),
+            notify::event::RemoveKind::File => {
+                is_supported_media_path(path).then_some(PendingPathAction::Delete)
+            }
+            // Backends that cannot tell files from folders: a supported
+            // extension is certainly a file; anything else may be a folder.
+            _ => Some(if is_supported_media_path(path) {
+                PendingPathAction::Delete
+            } else {
+                PendingPathAction::DeleteTree
+            }),
+        },
+        EventKind::Modify(notify::event::ModifyKind::Name(_)) => {
+            if path.is_file() {
+                is_supported_media_path(path).then_some(PendingPathAction::Upsert)
+            } else if path.is_dir() {
+                Some(PendingPathAction::ScanDirectory)
+            } else if is_supported_media_path(path) {
+                Some(PendingPathAction::Delete)
+            } else {
+                Some(PendingPathAction::DeleteTree)
+            }
+        }
+        _ => None,
+    }
 }
 
 fn flush_event_burst(
@@ -284,38 +326,38 @@ fn flush_event_burst(
                 continue;
             }
             if is_under_effective_excluded(&path, excluded_roots, current_excluded_roots.as_slice())
-                || !is_supported_media_path(&path)
             {
                 continue;
             }
-            let action = match &event.kind {
-                EventKind::Create(_) | EventKind::Modify(notify::event::ModifyKind::Data(_)) => {
-                    PendingPathAction::Upsert
-                }
-                EventKind::Remove(_) => PendingPathAction::Delete,
-                EventKind::Modify(notify::event::ModifyKind::Name(_)) => {
-                    if path.is_file() {
-                        PendingPathAction::Upsert
-                    } else {
-                        PendingPathAction::Delete
-                    }
-                }
-                _ => continue,
-            };
-            pending.insert(path, action);
+            if let Some(action) = classify_path_action(&event.kind, &path) {
+                pending.insert(path, action);
+            }
         }
     }
-    flush_pending_paths(db_actor, pending);
+    let mut scan_exclusions = excluded_roots.to_vec();
+    for root in current_excluded_roots {
+        if !scan_exclusions.contains(&root) {
+            scan_exclusions.push(root);
+        }
+    }
+    flush_pending_paths(db_actor, pending, &scan_exclusions);
 }
 
-fn flush_pending_paths(db_actor: &DbActorHandle, pending: HashMap<PathBuf, PendingPathAction>) {
+fn flush_pending_paths(
+    db_actor: &DbActorHandle,
+    pending: HashMap<PathBuf, PendingPathAction>,
+    excluded_roots: &[PathBuf],
+) {
     if pending.is_empty() {
         return;
     }
     let trace = OperationTrace::start(TraceChain::Filesystem, "watcher_burst");
-    let has_upserts = pending
-        .values()
-        .any(|action| matches!(action, PendingPathAction::Upsert));
+    let has_upserts = pending.values().any(|action| {
+        matches!(
+            action,
+            PendingPathAction::Upsert | PendingPathAction::ScanDirectory
+        )
+    });
     if has_upserts {
         std::thread::sleep(Duration::from_millis(
             runtime_config::notify_file_settle_ms(),
@@ -324,6 +366,8 @@ fn flush_pending_paths(db_actor: &DbActorHandle, pending: HashMap<PathBuf, Pendi
 
     let mut items = Vec::new();
     let mut deletes = Vec::new();
+    let mut tree_deletes = Vec::new();
+    let mut scans = Vec::new();
     for (path, action) in pending {
         match action {
             PendingPathAction::Upsert if path.is_file() => {
@@ -338,7 +382,19 @@ fn flush_pending_paths(db_actor: &DbActorHandle, pending: HashMap<PathBuf, Pendi
                 }
             }
             PendingPathAction::Upsert | PendingPathAction::Delete => deletes.push(path),
+            PendingPathAction::DeleteTree => tree_deletes.push(path),
+            PendingPathAction::ScanDirectory => scans.push(path),
         }
+    }
+    // A recursive move into the library reports only the top folder; scanning
+    // a folder already covered by an ancestor's scan would index it twice.
+    for root in topmost_directories(scans) {
+        tracing::info!(
+            target: log_targets::STORAGE,
+            "watcher 目录出现，扫描其内容: {}",
+            root.display()
+        );
+        scan_directory_tree(db_actor, &root, excluded_roots);
     }
     if !items.is_empty() {
         if let Err(error) = db_actor.execute_blocking_in_trace(
@@ -352,6 +408,11 @@ fn flush_pending_paths(db_actor: &DbActorHandle, pending: HashMap<PathBuf, Pendi
         }
     }
     if !deletes.is_empty() {
+        tracing::info!(
+            target: log_targets::STORAGE,
+            "watcher 文件消失，删除对应行: {:?}",
+            deletes
+        );
         if let Err(error) = db_actor.execute_blocking_in_trace(
             trace.clone(),
             DbCommand::DeleteLiveByPaths {
@@ -361,6 +422,70 @@ fn flush_pending_paths(db_actor: &DbActorHandle, pending: HashMap<PathBuf, Pendi
         ) {
             log_error(&trace, "db_delete_batch", &error);
         }
+    }
+    if !tree_deletes.is_empty() {
+        tracing::info!(
+            target: log_targets::STORAGE,
+            "watcher 目录消失，删除其下所有行: {:?}",
+            tree_deletes
+        );
+        if let Err(error) = db_actor.execute_blocking_in_trace(
+            trace.clone(),
+            DbCommand::DeleteLiveByFolderTrees {
+                source: ChangeSource::FilesystemWatcher,
+                paths: tree_deletes,
+            },
+        ) {
+            log_error(&trace, "db_delete_folder_trees", &error);
+        }
+    }
+}
+
+/// Keep only the outermost of a set of directories, so a moved tree is walked
+/// once instead of once per reported subdirectory.
+fn topmost_directories(mut dirs: Vec<PathBuf>) -> Vec<PathBuf> {
+    dirs.sort();
+    dirs.dedup();
+    let mut kept: Vec<PathBuf> = Vec::new();
+    for dir in dirs {
+        if kept.iter().any(|root| dir.starts_with(root)) {
+            continue;
+        }
+        kept.push(dir);
+    }
+    kept
+}
+
+/// Index every supported file below a directory that arrived through a rename.
+/// The individual children of a moved directory never produce their own
+/// events, so without this an in-library folder rename would delete the old
+/// rows and never add the new ones.
+fn scan_directory_tree(db_actor: &DbActorHandle, root: &Path, excluded_roots: &[PathBuf]) {
+    if !crate::core::backend::local::scan_root_is_available(root) {
+        return;
+    }
+    let trace = OperationTrace::start(TraceChain::Filesystem, "watcher_scan_dir");
+    let backend = LocalBackend::new(db_actor.pool().clone());
+    let actor = db_actor.clone();
+    let trace_for_commit = trace.clone();
+    if let Err(error) = backend.scan_and_submit_dir_notify_with_exclusions(
+        root,
+        excluded_roots,
+        move |items| match actor.execute_blocking_in_trace(
+            trace_for_commit.clone(),
+            DbCommand::UpsertMediaBatch {
+                source: ChangeSource::FilesystemWatcher,
+                items,
+            },
+        )? {
+            crate::core::db_actor::DbCommandResult::MediaItems(items) => Ok(items),
+            other => Err(crate::core::error::AppError::Backend(format!(
+                "unexpected directory scan response: {other:?}"
+            ))),
+        },
+        |_| {},
+    ) {
+        log_error(&trace, "scan_dir", &error);
     }
 }
 

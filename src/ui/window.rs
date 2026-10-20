@@ -21,6 +21,7 @@ use crate::core::db::DbPool;
 use crate::core::db_actor::DbActorHandle;
 use crate::core::i18n::tr;
 use crate::core::media::MediaItem;
+use crate::core::notify_watcher::WatcherHandle;
 use crate::core::repository::MediaQuery;
 use crate::core::runtime_config;
 use crate::core::thumbnails::ThumbnailLoader;
@@ -255,6 +256,10 @@ mod imp {
     pub struct MainWindow {
         pub pool: RefCell<Option<DbPool>>,
         pub db_actor: RefCell<Option<DbActorHandle>>,
+        /// Keeps the filesystem watcher (and its event channel) alive for as
+        /// long as the window exists. Dropping this handle stops live change
+        /// detection for the rest of the process.
+        pub watcher: RefCell<Option<WatcherHandle>>,
         pub loader: RefCell<Option<Arc<ThumbnailLoader>>>,
         pub media_list: RefCell<Option<gtk::gio::ListStore>>,
         /// Startup index pass lifecycle, mirrored on the window because the scan
@@ -891,6 +896,13 @@ impl MainWindow {
 
     pub fn set_db_actor(&self, db_actor: DbActorHandle) {
         *self.imp().db_actor.borrow_mut() = Some(db_actor);
+    }
+
+    /// Take ownership of the running filesystem watcher. The window is the
+    /// longest-lived owner available at startup; a local binding in `initialize`
+    /// would drop the handle (and stop watching) as soon as startup finishes.
+    pub fn set_watcher(&self, watcher: WatcherHandle) {
+        *self.imp().watcher.borrow_mut() = Some(watcher);
     }
     fn build_trash_page(&self) -> Option<TrashPage> {
         let pool = self.imp().pool.borrow().clone()?;

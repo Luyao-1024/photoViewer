@@ -342,6 +342,8 @@ all stale rows have been pruned.
 
 **Watcher must not hard-delete trashed rows.** When the app moves a photo to trash, `gio::File::trash()` relocates the file out of the watched directory, so the watcher sees the original path disappear. `db::delete_media_by_path` therefore filters with `AND trashed_at IS NULL`: a row the app has flagged via `mark_trashed` is preserved even though its original path is gone, so `list_trashed_media` keeps returning it for the Trash page. Removing that clause reintroduces "trash page shows nothing after deleting to trash."
 
+**Directory events are classified before the extension filter (`notify_watcher`).** File managers report deleting a whole folder as one event for the folder path and never one per child, so requiring a media extension would discard it and leave the folder's photos in the grid until the next scan. Delete-capable events (`Remove(_)` and rename-from paths that no longer exist) therefore bypass the extension check; the watcher splits them into exact-file deletes and `DbCommand::DeleteLiveByFolderTrees`, which removes every live row whose `path` equals the folder or whose `folder_path` is the folder or below it (emitting `MediaRemoved` so the grid and album detail drop them incrementally). A vanished folder with a matching `.trashinfo` keeps its rows as trashed — the folder has one trash entry covering all children, so its provenance decides the outcome. A rename-to path that exists as a directory is rescanned through the normal batch upsert path; without that, an in-library folder rename would delete the old rows and never index the new location. Upserts still require a supported media extension and a real file.
+
 **The startup index pass reports its own lifecycle.** `bootstrap::scan_and_aggregate_with_actor_blocking` emits `DomainEvent::ScanPhase { active: true }` before the walk and `{ active: false, error }` after it, where `error` is the failure text when the pass did not complete. UI code must not infer "the library is empty" from "the list has no rows yet" — an initial scan takes tens of seconds, and this event is the only thing that separates indexing from a genuinely empty library or a failed scan. `MainWindow::note_scan_phase` stores the latest value and replays it onto `PhotosPage::set_scan_phase` when the page is (re)built.
 
 Emission goes through `DbActorHandle::emit`, which publishes without running a DB command. `DomainEventSender::send` uses `blocking_send`, so it must never be called from the GTK main context — a page that wants to publish on its own has to hop off the main thread first.
@@ -374,6 +376,17 @@ This is also why a failing assertion in these suites used to be invisible: the
 `assert!` panicked, unwound, and then hung inside `Runtime::drop` instead of
 reporting a red test — the suite could not fail, only stall. `docs/testing.md`
 treats a stall as a result too.
+
+**The handle must outlive startup.** Because the handle owns the watcher,
+whoever holds it decides how long live watching lasts. `app.rs::initialize`
+returns the handle to `activate`, which stores it on `MainWindow`
+(`set_watcher`). It previously stayed in a local `_watcher` binding, so it was
+dropped when initialization returned: the watcher printed `notify watcher 已启动`
+and then closed its channel moments later, leaving every host-side file or
+folder change invisible until the next launch. Any future refactor must keep
+the handle on a process-lifetime owner. `WatcherHandle::stop` logs at INFO for
+exactly this reason — a watcher that stops while the app is still running is a
+bug, not routine shutdown noise.
 
 **Trash roots are also watched live (`notify_watcher`).** In addition to media roots, the watcher installs inotify on the system trash roots and app trash root. Events whose path is under a trash root are NOT treated as media upsert/delete — they set a dirty flag, and after the configured quiet period (`notify_trash_debounce_ms`, default ~400ms; gio's "empty trash" bursts many events) the watcher re-runs `reconcile_trash` and emits `DomainEvent::TrashChanged`. The UI consumer (`app.rs`) calls `MainWindow::refresh_visible_trash_page()` on that event, so an open Trash view reflects external restore/empty/delete without a page switch. External restore is also caught by the media-root watcher (file reappears → upsert clears `trashed_at`); the trash watcher's `TrashChanged` then makes the visible Trash view drop it.
 Normal media events use the same quiet burst: changes are coalesced by path,

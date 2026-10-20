@@ -26,6 +26,12 @@ pub enum DbCommand {
         source: ChangeSource,
         paths: Vec<PathBuf>,
     },
+    /// Delete every live row at or below each vanished directory. File
+    /// managers report a deleted folder as one event, never one per child.
+    DeleteLiveByFolderTrees {
+        source: ChangeSource,
+        paths: Vec<PathBuf>,
+    },
     DeleteLiveByFolder {
         source: ChangeSource,
         folder_path: PathBuf,
@@ -117,6 +123,7 @@ impl DbCommand {
             Self::UpsertMediaBatch { source, .. }
             | Self::DeleteLiveByPath { source, .. }
             | Self::DeleteLiveByPaths { source, .. }
+            | Self::DeleteLiveByFolderTrees { source, .. }
             | Self::DeleteLiveByFolder { source, .. } => match source {
                 ChangeSource::StartupScan => DbWritePriority::StartupScan,
                 ChangeSource::FilesystemWatcher => DbWritePriority::FilesystemWatcher,
@@ -493,6 +500,7 @@ fn db_command_name(command: &DbCommand) -> &'static str {
         DbCommand::UpsertMediaBatch { .. } => "upsert_media_batch",
         DbCommand::DeleteLiveByPath { .. } => "delete_live_by_path",
         DbCommand::DeleteLiveByPaths { .. } => "delete_live_by_paths",
+        DbCommand::DeleteLiveByFolderTrees { .. } => "delete_live_by_folder_trees",
         DbCommand::DeleteLiveByFolder { .. } => "delete_live_by_folder",
         DbCommand::PruneMissingLiveRows { .. } => "prune_missing_live_rows",
         DbCommand::SetFavorite { .. } => "set_favorite",
@@ -583,6 +591,33 @@ fn execute_command(
                         .iter()
                         .filter_map(|path| path.parent().map(PathBuf::from))
                         .collect(),
+                    affected_virtual: Vec::new(),
+                    live_count_delta: -(removed.len() as i64),
+                });
+            }
+            Ok(DbCommandResult::RemovedUris(removed))
+        }
+        DbCommand::DeleteLiveByFolderTrees { source, paths } => {
+            let removed = db::delete_live_media_under_folders(
+                pool,
+                &paths,
+                db::DeletionEvidence::ParentMustSurvive,
+            )?;
+            tracing::info!(
+                target: crate::core::log_targets::STORAGE,
+                removed = removed.len(),
+                folders = ?paths,
+                "watcher 目录树删除完成"
+            );
+            if !removed.is_empty() {
+                events.send(DomainEvent::MediaRemoved {
+                    source,
+                    ids: Vec::new(),
+                    uris: removed.clone(),
+                });
+                events.send(DomainEvent::AlbumsChanged {
+                    source,
+                    affected_folders: paths,
                     affected_virtual: Vec::new(),
                     live_count_delta: -(removed.len() as i64),
                 });
