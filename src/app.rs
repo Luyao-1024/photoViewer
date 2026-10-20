@@ -471,6 +471,12 @@ async fn initialize(
                 ),
                 Err(error) => tracing::warn!("could not reconcile interrupted sync runs: {error}"),
             }
+            // A run that ended between chained batches leaves durable work
+            // owed. Resume it once here; this is not a poll and failures that
+            // need the user are still left for an explicit trigger.
+            if let Err(error) = service.resume_unfinished_work() {
+                tracing::warn!("could not resume unfinished sync work: {error}");
+            }
             service.start_scheduler();
         });
     }

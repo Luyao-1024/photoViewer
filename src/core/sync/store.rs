@@ -567,6 +567,38 @@ impl SyncStore {
             .map(|detail| classify_detail(&detail)))
     }
 
+    /// Whether a launch can finish work a previous run left behind: a dirty
+    /// uplink entry or an unresolved receive-side resource/publication.
+    ///
+    /// An open conflict makes this false. It keeps the downlink unresolved and
+    /// asks the user to choose, and a cycle started behind it would be refused
+    /// the upload lease, so automatically requesting one would spin without ever
+    /// settling the conflict.
+    ///
+    /// This deliberately says nothing about *why* the work is owed, so a caller
+    /// must still respect the job's stored failure cause.
+    pub fn has_unfinished_work(&self, id: i64) -> Result<bool> {
+        let open_conflict = self.pool.get()?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sync_conflicts WHERE job_id=?1 AND state='open')",
+            [id],
+            |row| row.get(0),
+        )?;
+        if open_conflict {
+            return Ok(false);
+        }
+        if self.unresolved_resource_count(id)? > 0 {
+            return Ok(true);
+        }
+        self.pool
+            .get()?
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_entries WHERE job_id=?1 AND native_dirty<>0)",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+    }
+
     pub fn set_upload_albums(&self, id: i64, relative_albums: &[String]) -> Result<()> {
         let relative_albums = normalize_relative_albums(relative_albums)?;
         self.write(SyncWrite::SetUploadAlbums {

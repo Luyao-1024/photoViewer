@@ -112,6 +112,85 @@ async fn automatic_sync_requires_a_local_change_and_never_polls() {
     finish_attempt(&service, job.id, &attempts, 2).await;
 }
 
+#[tokio::test(start_paused = true)]
+async fn startup_resumes_durable_work_once_without_polling() {
+    let sandbox = photo_viewer::testing::Sandbox::install();
+    let root = sandbox.scratch("sync-resume-scheduling");
+    let photos = root.path().join("photos");
+    std::fs::create_dir(&photos).unwrap();
+    let pool = photo_viewer::core::db::init_pool(&root.path().join("library.db")).unwrap();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let counter = attempts.clone();
+    let service =
+        SyncService::with_staging_root_for_tests(pool.clone(), root.path().join("staging"))
+            .with_credential_reader(move |_| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Err(photo_viewer::core::error::AppError::Backend(
+                    "network is unavailable: resume regression".into(),
+                ))
+            });
+    let job = service
+        .store()
+        .create_job(&NewSyncJob {
+            provider_kind: ProviderKind::NativeSyncServer,
+            endpoint: "https://sync.example.invalid/".into(),
+            credential_ref: "resume-test".into(),
+            local_root: photos,
+            direction: SyncDirection::Bidirectional,
+            upload_scope: UploadScope::All,
+            upload_albums: Vec::new(),
+            native_zone: Some(NativeZone::new("PrimarySync")),
+            native_pinned: Some(demo_pinned_scope(
+                "https://sync.example.invalid/",
+                &["PrimarySync"],
+            )),
+        })
+        .unwrap();
+    photo_viewer::core::prefs::set_sync_enabled(true).unwrap();
+
+    // A job that owes nothing keeps the launch silent.
+    assert_eq!(service.resume_unfinished_work().unwrap(), 0);
+    advance(Duration::ZERO).await;
+    assert_eq!(attempts.load(Ordering::SeqCst), 0);
+
+    // Durable work left by an earlier run is resumed exactly once.
+    pool.get()
+        .unwrap()
+        .execute(
+            "INSERT INTO sync_entries(job_id, relative_path, native_dirty, native_local_version)
+             VALUES(?1, 'deferred.jpg', 2, 1)",
+            [job.id],
+        )
+        .unwrap();
+    assert_eq!(service.resume_unfinished_work().unwrap(), 1);
+    finish_attempt(&service, job.id, &attempts, 1).await;
+
+    advance(Duration::from_secs(45)).await;
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        1,
+        "resuming owed work must not arm a periodic retry"
+    );
+
+    // An open conflict needs the user's choice and blocks the upload lease, so
+    // resuming behind it would spin without settling anything.
+    pool.get()
+        .unwrap()
+        .execute(
+            "INSERT INTO sync_conflicts(job_id, entry_id, kind)
+             SELECT job_id, id, 'native' FROM sync_entries WHERE job_id=?1",
+            [job.id],
+        )
+        .unwrap();
+    assert_eq!(
+        service.resume_unfinished_work().unwrap(),
+        0,
+        "a launch must not resume behind an open conflict"
+    );
+    advance(Duration::from_secs(45)).await;
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+}
+
 fn demo_pinned_scope(public_base_url: &str, zones: &[&str]) -> NativePinnedScope {
     NativePinnedScope {
         authentication: None,

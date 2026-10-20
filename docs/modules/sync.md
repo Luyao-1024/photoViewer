@@ -57,15 +57,30 @@ Protocol definitions remain exclusively in the sibling server repository.
 ## Automatic synchronization
 
 Background synchronization starts only after local changes have been quiet for
-10 seconds. Startup and idle time do not request a cycle; there is no periodic
-poll or timed failure retry. Successful batches continue immediately while they
-make progress and have outstanding work. Unfinished work remains durable until
-another local change or explicit trigger. Cloud-only changes require an explicit
-trigger, such as Sync Now or Photos pull-to-refresh. Accepted effective
-configuration changes also retain their existing automatic trigger.
+10 seconds. Idle time does not request a cycle; there is no periodic poll or
+timed failure retry. Successful batches continue immediately while they make
+progress and have outstanding work, for at most eight chained cycles. At that
+cap the cycle made progress without failures, so the worker yields its slot and
+requests one continuation after a one-second delay instead of stranding work it
+already admitted; a cycle that reported failures never arms that continuation.
+Cloud-only changes require an explicit trigger, such as Sync Now or Photos
+pull-to-refresh. Accepted effective configuration changes also retain their
+existing automatic trigger.
 
-`tests/native_sync_scheduling.rs` verifies startup/idle silence, the 10-second
-local-change trigger, no timed retry after failure, and a subsequent change.
+Startup is not a poll either, but it resumes durable work exactly once per
+launch: a job that is not paused, has no user-actionable failure, has no open
+conflict, and still owns a dirty uplink entry or an unresolved receive-side
+resource is requested after interrupted runs are reconciled. An open conflict
+suppresses the resume because it needs the user's choice and already blocks the
+upload lease, so a cycle started behind it would spin without settling
+anything. Without the resume, a process that ended between chained batches
+would leave admissible work stranded until an unrelated local change.
+
+`tests/native_sync_scheduling.rs` verifies startup/idle silence with nothing
+owed, the one-shot startup resume, the 10-second local-change trigger, no timed
+retry after failure, and a subsequent change.
+`tests/native_sync_assets.rs` verifies that a chain stopped at its cap yields
+and then finishes the deferred photo through the real SyncServer.
 
 ## Relational persistence and batch timing
 

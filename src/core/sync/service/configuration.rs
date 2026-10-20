@@ -3,6 +3,7 @@ use super::super::store::{JobEdit, SyncWriteResult};
 use super::*;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 pub(super) type JobKey = (PathBuf, i64);
 
@@ -29,6 +30,14 @@ pub(super) static GLOBAL_RUN_EPOCH: AtomicU64 = AtomicU64::new(0);
 /// for anything that can fail repeatedly: the worker holds its slot, and the
 /// rest of the app starves behind it.
 const MAX_CHAINED_CYCLES: usize = 8;
+
+/// The fairness yield between bounded chains.
+///
+/// Reaching the cap is not a reason to strand work the service already agreed
+/// to finish: the worker releases its slot, and one short delay later it asks
+/// for another. A cycle that reported failures never arms this, so the delay
+/// never becomes a timed retry.
+const CONTINUATION_YIELD: Duration = Duration::from_secs(1);
 
 impl SyncService {
     pub(super) fn job_key(&self, id: i64) -> Result<JobKey> {
@@ -93,6 +102,44 @@ impl SyncService {
         Ok(super::scheduling::unattended_retry_is_worthwhile(
             self.store.failure_cause(id)?,
         ))
+    }
+
+    /// Resume a chain that stopped only to yield the worker slot.
+    ///
+    /// The remaining work was already admitted by a cycle that made progress
+    /// without failures, so this is a continuation, not a retry: the job keeps
+    /// draining instead of waiting for an unrelated local change.
+    fn schedule_continuation(&self, id: i64, outstanding: usize) {
+        tracing::info!(
+            target: crate::core::log_targets::SYNC,
+            job_id = id,
+            outstanding,
+            delay_ms = CONTINUATION_YIELD.as_millis() as u64,
+            "云同步批次达到连续上限，让出调度后继续"
+        );
+        let service = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(CONTINUATION_YIELD).await;
+            if !crate::core::prefs::sync_enabled() || service.store.reset_pending().unwrap_or(true)
+            {
+                return;
+            }
+            let resumable = service
+                .store
+                .get_job(id)
+                .ok()
+                .flatten()
+                .is_some_and(|job| !job.paused);
+            if resumable {
+                if let Err(error) = service.request_job_sync(id) {
+                    tracing::warn!(
+                        target: crate::core::log_targets::SYNC,
+                        job_id = id, error = %error,
+                        "不能继续云同步批次"
+                    );
+                }
+            }
+        });
     }
 
     pub fn has_pending_work(&self, id: i64) -> Result<bool> {
@@ -274,10 +321,30 @@ impl SyncService {
                                 } else {
                                     let mut outstanding = report.outstanding;
                                     let mut chained = 0usize;
+                                    let mut failure_free = report.failures.is_empty();
                                     let mut chain = (report.mutations_sent > 0
                                         || report.mutations_confirmed > 0)
                                         && outstanding > 0;
                                     while chain {
+                                        if chained >= MAX_CHAINED_CYCLES {
+                                            // `chain` is still true here: the
+                                            // last cycle made progress and work
+                                            // remains. Failures keep the work
+                                            // waiting for the next trigger.
+                                            let retry_worthwhile = self
+                                                .store
+                                                .failure_cause(id)
+                                                .map(|cause| {
+                                                    super::scheduling::unattended_retry_is_worthwhile(
+                                                        cause,
+                                                    )
+                                                })
+                                                .unwrap_or(false);
+                                            if failure_free && retry_worthwhile {
+                                                self.schedule_continuation(id, outstanding);
+                                            }
+                                            break;
+                                        }
                                         if !self
                                             .may_chain_another_cycle(id, chained)
                                             .unwrap_or(false)
@@ -298,6 +365,7 @@ impl SyncService {
                                                     break;
                                                 }
                                                 outstanding = report.outstanding;
+                                                failure_free = report.failures.is_empty();
                                                 chain = (report.mutations_sent > 0
                                                     || report.mutations_confirmed > 0)
                                                     && outstanding > 0;

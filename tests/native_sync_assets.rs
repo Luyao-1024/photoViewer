@@ -1539,3 +1539,105 @@ fn successful_batches_chain_immediately_while_work_remains() {
         );
     });
 }
+
+#[test]
+fn a_bounded_chain_yields_then_finishes_deferred_work() {
+    let sandbox = photo_viewer::testing::Sandbox::install();
+    let _preferences = PREFERENCES.lock().unwrap();
+    photo_viewer::core::prefs::set_sync_enabled(true).unwrap();
+    let Some(server) = Server::start() else {
+        return skip();
+    };
+    let (logs, _logs_guard) = Capture::install();
+    let root = sandbox.scratch("native-uplink-continuation");
+    let source = root.path().join("source");
+    std::fs::create_dir_all(&source).unwrap();
+    block_on(async {
+        use photo_viewer::core::{
+            db,
+            db_actor::{start_db_actor, DbCommand},
+            events::{ChangeSource, DomainEventSender},
+            media::NewMediaItem,
+            sync::{NewSyncJob, ProviderKind, SyncDirection, SyncService, UploadScope},
+        };
+        let scope = server.client().probe().await.unwrap();
+        let pool = db::init_pool(&root.path().join("library.sqlite")).unwrap();
+        let (sender, _events) = DomainEventSender::new();
+        let actor = start_db_actor(pool.clone(), sender);
+        let key = server.api_key.clone();
+        let service = SyncService::with_actor(pool.clone(), actor.clone())
+            .with_credential_reader(move |_| Ok(key.clone()));
+        let item = |path: &Path| {
+            common::cache_local_thumbnail(path);
+            NewMediaItem {
+                uri: photo_viewer::core::file_uri::from_path(path),
+                path: path.into(),
+                folder_path: path.parent().unwrap().into(),
+                mime_type: "image/jpeg".into(),
+                media_subkind: "standard".into(),
+                media_attributes: "{}".into(),
+                width: Some(64),
+                height: Some(48),
+                video_duration_secs: None,
+                taken_at: None,
+                file_mtime: std::fs::metadata(path).unwrap().modified().unwrap().into(),
+                file_size: std::fs::metadata(path).unwrap().len(),
+                blake3_hash: String::new(),
+            }
+        };
+        // A new photo is one asset slot. The initial cycle plus eight chained
+        // ones move forty-five of forty-six photos, so only the fairness yield
+        // can finish the last one.
+        let items = (0..46)
+            .map(|i| {
+                item(&common::write_plain_jpeg(
+                    &source,
+                    &format!("photo-{i:02}.jpg"),
+                ))
+            })
+            .collect();
+        actor
+            .execute_blocking(DbCommand::UpsertMediaBatch {
+                source: ChangeSource::UserInteractive,
+                items,
+            })
+            .unwrap();
+        let job = service
+            .store()
+            .create_job(&NewSyncJob {
+                provider_kind: ProviderKind::NativeSyncServer,
+                endpoint: server.base_url.clone(),
+                credential_ref: "continuation-key".into(),
+                local_root: source.clone(),
+                direction: SyncDirection::Bidirectional,
+                upload_scope: UploadScope::All,
+                upload_albums: vec![],
+                native_zone: Some(NativeZone::new("PrimarySync")),
+                native_pinned: Some(scope),
+            })
+            .unwrap();
+        service.request_job_sync(job.id).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(120);
+        // `has_unfinished_work` drops as the last record is confirmed, which can
+        // happen before the worker releases its slot, so wait for both.
+        while service.store().has_unfinished_work(job.id).unwrap()
+            || service.has_pending_work(job.id).unwrap()
+        {
+            assert!(
+                Instant::now() < deadline,
+                "the bounded chain stranded deferred work: overview={:?}, logs: {}",
+                service.store().overview(),
+                logs.text()
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(service.store().uplink_view(job.id).unwrap().len(), 0);
+        let overview = service.store().overview().unwrap();
+        assert_eq!(overview.synced_items, 46, "{overview:?}");
+        assert_eq!(overview.total_items, 46, "{overview:?}");
+        assert_eq!(
+            logs.lines("云同步批次达到连续上限，让出调度后继续").len(),
+            1
+        );
+    });
+}

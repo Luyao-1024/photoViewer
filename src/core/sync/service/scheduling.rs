@@ -85,6 +85,41 @@ impl SyncService {
         Ok(asked)
     }
 
+    /// Finish durable work a completed run left behind, once per launch.
+    ///
+    /// This is not a poll: it asks at most once per job, and only when an entry
+    /// is still dirty or a receive-side resource is unresolved. Without it, a
+    /// process that ended between chained batches would leave admissible work
+    /// stranded until an unrelated local change.
+    pub fn resume_unfinished_work(&self) -> Result<usize> {
+        self.store.normalize_accounts()?;
+        if !crate::core::prefs::sync_enabled() || self.store.reset_pending()? {
+            return Ok(0);
+        }
+        self.store.resume_local_changes()?;
+        let mut asked = 0;
+        for job in self.store.list_jobs()? {
+            if job.paused
+                || !unattended_retry_is_worthwhile(self.store.failure_cause(job.id)?)
+                || !self.store.has_unfinished_work(job.id)?
+            {
+                continue;
+            }
+            if !self.has_pending_work(job.id)? && !self.is_job_running(job.id)? {
+                self.request_job_sync(job.id)?;
+                asked += 1;
+            }
+        }
+        if asked > 0 {
+            tracing::info!(
+                target: crate::core::log_targets::SYNC,
+                jobs = asked,
+                "启动时恢复未完成的云同步工作"
+            );
+        }
+        Ok(asked)
+    }
+
     pub fn request_all_sync(&self) -> Result<()> {
         self.store.normalize_accounts()?;
         if !crate::core::prefs::sync_enabled() || self.store.reset_pending()? {
@@ -100,8 +135,9 @@ impl SyncService {
     }
 
     /// Listen for local changes and request a cycle after a 10-second quiet period.
-    /// Startup and idle time never request cycles; failures wait for another
-    /// change or an explicit trigger rather than arming a periodic retry.
+    /// This listener never fires on startup or idle time; `resume_unfinished_work`
+    /// owns the one-shot launch resume. Failures wait for another change or an
+    /// explicit trigger rather than arming a periodic retry.
     pub fn start_scheduler(&self) {
         static DATABASES: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
         let Ok((database, _)) = self.job_key(0) else {

@@ -8,9 +8,11 @@
 //! running pushes the end out again, so a burst of imports costs one run rather
 //! than one run per file.
 //!
-//! This is the only background trigger. Idle time and application startup do not
-//! start a cycle. Unfinished work remains durable until another local change or
-//! an explicit trigger requests a run; failures do not arm a periodic retry.
+//! This is the only background trigger. Idle time does not start a cycle.
+//! Startup and a chain that reaches its cap each ask for one continuation of
+//! work that is already owed — the former once per launch, the latter only
+//! after a failure-free cycle made progress — so neither becomes a poll.
+//! Failures do not arm a periodic retry.
 
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
