@@ -268,20 +268,18 @@ impl SyncService {
             if item.storage_location != crate::core::media::MediaLocation::Cloud {
                 continue;
             }
-            for size in [
-                crate::core::thumbnails::ThumbnailSize::Small,
-                crate::core::thumbnails::ThumbnailSize::Medium,
-                crate::core::thumbnails::ThumbnailSize::Large,
-            ] {
-                crate::core::thumbnails::import_cached_thumbnail(
-                    &crate::config::cache_dir(),
-                    &item.uri,
-                    size,
-                    Some(item.file_mtime.into()),
-                    &bytes,
-                )
-                .map_err(|e| error(format!("cannot install downloaded thumbnail: {e}")))?;
-            }
+            crate::core::thumbnails::import_cached_thumbnails(
+                &crate::config::cache_dir(),
+                &item.uri,
+                Some(item.file_mtime.into()),
+                &bytes,
+                &[
+                    crate::core::thumbnails::ThumbnailSize::Small,
+                    crate::core::thumbnails::ThumbnailSize::Medium,
+                    crate::core::thumbnails::ThumbnailSize::Large,
+                ],
+            )
+            .map_err(|e| error(format!("cannot install downloaded thumbnail: {e}")))?;
             self.store().runtime(Command::ThumbnailReady {
                 publication: intent.publication_id,
                 media,
@@ -437,20 +435,18 @@ impl SyncService {
         let uri = crate::core::file_uri::from_path(&target);
         let mtime = std::fs::metadata(&next)?.modified()?;
         let thumbnail_bytes = std::fs::read(thumbnail)?;
-        for size in [
-            crate::core::thumbnails::ThumbnailSize::Small,
-            crate::core::thumbnails::ThumbnailSize::Medium,
-            crate::core::thumbnails::ThumbnailSize::Large,
-        ] {
-            crate::core::thumbnails::import_cached_thumbnail(
-                &crate::config::cache_dir(),
-                &uri,
-                size,
-                Some(mtime),
-                &thumbnail_bytes,
-            )
-            .map_err(|_| error("thumbnail cache preparation failed"))?;
-        }
+        crate::core::thumbnails::import_cached_thumbnails(
+            &crate::config::cache_dir(),
+            &uri,
+            Some(mtime),
+            &thumbnail_bytes,
+            &[
+                crate::core::thumbnails::ThumbnailSize::Small,
+                crate::core::thumbnails::ThumbnailSize::Medium,
+                crate::core::thumbnails::ThumbnailSize::Large,
+            ],
+        )
+        .map_err(|_| error("thumbnail cache preparation failed"))?;
         let mut item = self.media_item(photo, &target, &next)?;
         if capture["preserveMetadata"] == true {
             item.taken_at = capture["takenAt"]

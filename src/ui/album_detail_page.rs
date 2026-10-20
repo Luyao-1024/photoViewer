@@ -24,7 +24,7 @@ use crate::ui::keyboard::{KeyboardAction, KeyboardResult};
 use crate::ui::media_grid::{FavoriteMenuState, MediaGridCallbacks};
 use crate::ui::media_list::index_for_media_id;
 use crate::ui::viewer_page::ViewerPage;
-use crate::ui::virtual_media_grid::VirtualMediaGrid;
+use crate::ui::virtual_media_grid::{IncrementalItemKind, VirtualMediaGrid};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -742,7 +742,7 @@ impl AlbumDetailPage {
             viewer.connect_favorite_state_changed(move |_, _| {
                 if is_favorite_album {
                     if let Some(this) = this.upgrade() {
-                        this.refresh_media_list_from_repository();
+                        this.refresh_media_list_from_repository("favorite_changed");
                     }
                     if let Some(nav) = nav_for_albums.upgrade() {
                         crate::ui::window::refresh_albums_sidebar(&nav);
@@ -780,7 +780,7 @@ impl AlbumDetailPage {
     }
 
     #[tracing::instrument(name = "album_detail:refresh_media_list", skip(self))]
-    pub(crate) fn refresh_media_list_from_repository(&self) {
+    pub(crate) fn refresh_media_list_from_repository(&self, reason: &'static str) {
         let Some(album) = self.imp().album.borrow().as_ref().cloned() else {
             return;
         };
@@ -829,10 +829,47 @@ impl AlbumDetailPage {
             {
                 let splice_span = tracing::info_span!("album_detail:splice");
                 let _splice = splice_span.enter();
-                if !apply_pure_insertions(&media_list, &items) {
-                    let additions: Vec<glib::BoxedAnyObject> =
-                        items.into_iter().map(glib::BoxedAnyObject::new).collect();
-                    media_list.splice(0, media_list.n_items(), &additions);
+                match plan_refresh(&media_list, &items) {
+                    RefreshPlan::Unchanged => {}
+                    RefreshPlan::Insert {
+                        position,
+                        additions,
+                    } => {
+                        // The store only carries the page; the grid resolves the
+                        // canonical ranks itself. Without suppressing its
+                        // projection listener, every admission/replay splice is
+                        // answered with a full metadata reload (one per media
+                        // event), which rebinds every painted tile.
+                        let grid = this.imp().grid.borrow().clone();
+                        if let Some(grid) = grid.as_ref() {
+                            grid.begin_incremental_item_update(
+                                &additions,
+                                IncrementalItemKind::Upsert,
+                            );
+                        }
+                        let additions: Vec<glib::BoxedAnyObject> = additions
+                            .into_iter()
+                            .map(glib::BoxedAnyObject::new)
+                            .collect();
+                        media_list.splice(position, 0, &additions);
+                        if let Some(grid) = grid.as_ref() {
+                            grid.end_incremental_item_update();
+                        }
+                    }
+                    RefreshPlan::Replace => {
+                        tracing::info!(
+                            target: crate::core::log_targets::BROWSING,
+                            surface = "album_detail",
+                            reason,
+                            before = media_list.n_items(),
+                            after = items.len(),
+                            album = %album.display_name(),
+                            "FULL_REFRESH_TRACE"
+                        );
+                        let additions: Vec<glib::BoxedAnyObject> =
+                            items.into_iter().map(glib::BoxedAnyObject::new).collect();
+                        media_list.splice(0, media_list.n_items(), &additions);
+                    }
                 }
             }
             tracing::debug!(
@@ -847,10 +884,30 @@ impl AlbumDetailPage {
     }
 }
 
-fn apply_pure_insertions(list: &gtk::gio::ListStore, refreshed: &[MediaItem]) -> bool {
+/// How a repository-refreshed page should reach the album's `ListStore`.
+enum RefreshPlan {
+    /// The refreshed page reproduces the resident one exactly. Replacing the
+    /// store here would make the grid rebind every painted tile although
+    /// nothing on the page changed, which is what publications trigger during
+    /// downlink: admissions of cloud-only rows that are not displayable yet,
+    /// downloads into other albums, and metadata batches for other folders.
+    Unchanged,
+    /// Items were added between stable neighbors: splice exactly those.
+    Insert {
+        position: u32,
+        additions: Vec<MediaItem>,
+    },
+    /// Any other difference: replace the store so the page reflects it.
+    Replace,
+}
+
+fn plan_refresh(list: &gtk::gio::ListStore, refreshed: &[MediaItem]) -> RefreshPlan {
     let current = media_items_from_store(list);
+    if current == refreshed {
+        return RefreshPlan::Unchanged;
+    }
     if refreshed.len() <= current.len() {
-        return false;
+        return RefreshPlan::Replace;
     }
 
     let mut prefix = 0usize;
@@ -872,20 +929,17 @@ fn apply_pure_insertions(list: &gtk::gio::ListStore, refreshed: &[MediaItem]) ->
     }
 
     if prefix + suffix != current.len() {
-        return false;
+        return RefreshPlan::Replace;
     }
 
     let insert_end = refreshed.len() - suffix;
     if insert_end <= prefix {
-        return false;
+        return RefreshPlan::Replace;
     }
-    let additions: Vec<glib::BoxedAnyObject> = refreshed[prefix..insert_end]
-        .iter()
-        .cloned()
-        .map(glib::BoxedAnyObject::new)
-        .collect();
-    list.splice(prefix as u32, 0, &additions);
-    true
+    RefreshPlan::Insert {
+        position: prefix as u32,
+        additions: refreshed[prefix..insert_end].to_vec(),
+    }
 }
 
 fn media_items_from_store(list: &gtk::gio::ListStore) -> Vec<MediaItem> {

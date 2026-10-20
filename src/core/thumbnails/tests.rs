@@ -1885,3 +1885,46 @@ fn downloaded_thumbnail_invalidates_only_its_own_memory_copies() {
         .try_load_exif_thumb_cached(untouched, mtime)
         .is_some());
 }
+
+#[test]
+fn importing_downloaded_thumbnail_installs_every_requested_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let pixbuf =
+        gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, 1600, 1200).unwrap();
+    pixbuf.fill(0x336699ff);
+    let bytes = pixbuf
+        .save_to_bufferv("jpeg", &[("quality", "90")])
+        .unwrap();
+    let uri = "file:///cloud/imported.jpg";
+    let mtime = Some(std::time::SystemTime::UNIX_EPOCH);
+
+    import_cached_thumbnails(
+        dir.path(),
+        uri,
+        mtime,
+        &bytes,
+        &[
+            ThumbnailSize::Small,
+            ThumbnailSize::Medium,
+            ThumbnailSize::Large,
+        ],
+    )
+    .unwrap();
+
+    for size in [
+        ThumbnailSize::Small,
+        ThumbnailSize::Medium,
+        ThumbnailSize::Large,
+    ] {
+        let path = cache_stem_for(dir.path(), uri, size, mtime)
+            .unwrap()
+            .with_extension("jpg");
+        let imported = gdk_pixbuf::Pixbuf::from_file(&path).unwrap();
+        assert!(
+            imported.width() <= size.max_dim() as i32 && imported.height() <= size.max_dim() as i32,
+            "{size:?} import exceeds its requested bound: {}x{}",
+            imported.width(),
+            imported.height()
+        );
+    }
+}

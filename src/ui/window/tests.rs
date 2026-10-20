@@ -43,7 +43,7 @@ fn shared_media_projection_refresh_emits_pure_addition_for_new_item() {
     });
 
     let added = media_item(2, "/tmp/shared-refresh", "two.jpg");
-    apply_media_projection_to_list(&list, vec![added, existing]);
+    apply_media_projection_to_list(&list, vec![added, existing], "test");
 
     assert_eq!(
         *changes.borrow(),

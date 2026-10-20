@@ -77,7 +77,11 @@ Overview statistics load once when the repository is attached, then refresh on
 actual domain changes. `SyncStateDirty` requests fresh sync counts; task configuration changes and ordinary
 library-count changes reuse the cached sync overview. There is no two-second
 statistics poll. Events received during a read request one coalesced follow-up,
-so a completed batch cannot leave stale progress on screen.
+so a completed batch cannot leave stale progress on screen. A download emits one
+`SyncStateDirty` per resource, so the window refreshes on the leading event and
+then at most once per 300 ms, with one trailing refresh for the last event in a
+burst; without that throttle the three library COUNTs and the sync overview run
+dozens of times per second for numbers the user cannot read that fast.
 
 The window keeps Photos and the currently active `AlbumDetailPage` as peer
 children of `MainWindow`'s `browsing_stack`. That stack uses `crossfade` with a
@@ -393,20 +397,67 @@ scroll the viewport to top.
 
 Media activation is debounced while opening `ViewerPage` on the shared `AdwNavigationView`. Rapid repeated clicks in Year/Month/Day views must open only one viewer page: every viewer entry point (Photos, album details, search results) arms a short `viewer_open_pending` window that ignores duplicate activations during the push transition. There is no initial-open navigation-pop guard — a second click does not close the viewer (it cannot produce a pop), and an immediate back / Escape / swipe-back right after opening is intentional user input and is honored, so `can_pop` stays true from the first `show_at`.
 
-Cloud downloads use an explicit incremental path rather than interpreting each
-shared-list notification as a request to replace the whole layout. The actor
-emits an upsert when a thumbnail first makes a photo displayable and a field
-update when an already visible photo gains its original or a newer thumbnail.
-Photos and album-detail grids resolve the changed identities' canonical ranks
-and section counts off the GTK thread, coalesce pending changes, and retain
-unaffected slot GObjects, resident snapshots and painted thumbnails. Insertion
-replaces only the shifted tail/filler of its date section; later sections move
-without being rebound. Existing-photo updates replace at most their own slot.
-Queries inconsistent with the captured change set fall back to a metadata
-reload. Inactive modes defer work until activation. Regression coverage includes
-`sync_insertion_` model tests and `tests/ux_sync_grid_updates.rs`, which selects a
-painted photo through real input and checks that a background admission leaves
-its widget, texture and selection intact.
+Single-photo changes use an explicit incremental path rather than interpreting
+each shared-list notification as a request to replace the whole layout. This
+covers cloud downloads (a bounded synchronization upsert, or a field update when
+an already indexed photo gains its original or a newer thumbnail) and ordinary
+bounded additions from the filesystem watcher or an import. Bulk startup scans,
+large batches, removals, and ambiguous change sets keep the full metadata reload.
+Photos and album-detail grids resolve the changed identities' canonical ranks and
+section counts off the GTK thread, coalesce pending changes, and retain
+unaffected slot GObjects, resident snapshots and painted thumbnails. An insertion
+into an existing date section is announced as a pure `items_changed` addition of
+the one media slot, against a transient layout; a second notification then
+removes or appends only the section's trailing filler. Already-bound slots keep
+their GObject identity and their painted thumbnails, and later sections shift
+without being rebound. Inserting a brand-new date section adds its aligned slot
+run in one notification. Existing-photo updates replace at most their own slot.
+A generic upsert is admitted only when the authoritative count delta proves every
+unknown item is new; an upsert of an existing photo could have changed rank, and
+`refresh_ready_item` cannot relocate it, so unmatched deltas fall back to a
+metadata reload. Queries inconsistent with the captured change set fall back
+likewise. A thumbnail-only update of media that is already resident is applied
+from the pending snapshot without touching the database: its sort key and
+membership were fixed when the row entered the query, so a download finishing
+does not need another rank lookup. When that update leaves the thumbnail cache
+key and every rendered field unchanged - the normal cloud-to-both availability
+flip - the resident snapshot is refreshed in place instead of replacing the slot,
+so the painted tile keeps its object and its pixels. Updated media outside the
+materialized range are left to their next page load instead of forcing a query,
+so an original download never ranks anything. Admission batches rank the whole batch in one walk
+over the query's canonical order instead of repeating a full COUNT per photo. The
+walk records the batch's ids as it passes and stops after the last one, so the
+metadata-determined order is resolved once per batch rather than once per
+downloaded photo. Section counts and their authoritative total come from the same
+date-group aggregation as before; when no admission belongs to this grid's query
+- the common case for an open album while another album syncs - the aggregation is
+skipped too, because no insertion can move this layout. Photos that belong to
+another query (a download into a different album, or a row this grid never shows)
+are ignored rather than treated as a mismatch, so an open album page does not
+rebind every painted tile while another album receives downloads; only a photo
+that was resident in the grid and left the query still forces a reload. An album detail page additionally owns a
+filtered `ListStore` that the shared list cannot maintain: its refresh replans
+the page from the album's query and leaves the store untouched when the refreshed
+page reproduces the resident one. Admissions of cloud-only rows that are not
+displayable yet, downloads into other albums and metadata batches for other
+folders therefore never touch the store - a replacement emits `items_changed`
+and rebinds every painted tile although nothing on the page changed. Only pure
+additions are spliced; any real difference still replaces the store. Inactive
+modes defer work until activation. Every full replacement that remains reports one
+INFO `FULL_REFRESH_TRACE` line with `surface` (`photos_shared_list`, `grid` or
+`album_detail`), the grid's `view` query identity, the coalesced `reason`
+triggers, and before/after counts, so
+reload frequency can be counted from a normal release `app.log` without enabling
+debug logging. Grid reasons include `initial`, `activation`, `shared_list_changed`,
+`incremental_inactive`, `incremental_metadata_not_ready`,
+`incremental_metadata_loading`, `incremental_fallback` and `rerun_dirty`; the
+shared Photos list reports `live_count_dirty` or `album_operation`.
+Regression coverage includes `insertion_` model tests, the incremental-admission
+unit tests, the album-page refresh plan tests, and `tests/ux_sync_grid_updates.rs`
+/ `tests/ux_local_grid_updates.rs` / `tests/ux_album_grid_updates.rs`, which drive
+a real input path and check that a background download, local import, unrelated
+album download, or not-yet-displayable cloud admission leaves an existing tile's
+widget, texture and selection intact.
 
 Photos multi-select state is owned by each `VirtualMediaGrid` as a stable
 `MediaId` set. A recycled factory cell derives its checkmark from that set when

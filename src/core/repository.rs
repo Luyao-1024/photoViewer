@@ -370,6 +370,17 @@ impl MediaRepository {
         db::media_position(&self.pool, id.get(), &filter, &params, trashed)
     }
 
+    /// 0-based ranks for an admission batch in one ordered walk. Ids outside
+    /// the query are absent from the result.
+    pub(crate) fn positions_in_order(
+        &self,
+        query: MediaQuery,
+        media_ids: &[i64],
+    ) -> Result<HashMap<i64, u32>> {
+        let (filter, params, trashed) = nav_projection(&query);
+        db::media_ranks_in_order(&self.pool, media_ids, &filter, &params, trashed)
+    }
+
     pub fn neighbor(
         &self,
         query: MediaQuery,

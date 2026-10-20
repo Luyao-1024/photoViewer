@@ -6,11 +6,11 @@
 //! `MediaGrid`.
 
 mod factory;
+mod incremental_updates;
 mod layout_index;
 mod mode;
 mod model;
 mod range_cache;
-mod sync_updates;
 
 use crate::core::i18n::tr;
 use crate::core::identity::MediaId;
@@ -61,6 +61,7 @@ pub(crate) fn preferred_day_grid_width(columns: usize) -> i32 {
     virtual_grid_preferred_width(VirtualGridModeSpec::for_mode(GroupBy::Day), columns as u32)
 }
 
+pub(crate) use incremental_updates::IncrementalItemKind;
 pub(crate) use model::GridSlotState;
 
 /// Identity for a factory binding.  A thumbnail result may only paint a tile
@@ -292,6 +293,10 @@ mod imp {
         pub layout_generation: Cell<u64>,
         pub live_total: Cell<u32>,
         pub metadata_reload_source: RefCell<Option<glib::SourceId>>,
+        /// Every trigger coalesced into the next full metadata reload. Reported
+        /// in one `FULL_REFRESH_TRACE` line so repeated reloads can be traced
+        /// back to the events that requested them.
+        pub metadata_reload_reasons: RefCell<Vec<&'static str>>,
         pub pending_column_width: Cell<i32>,
         pub column_update_source: RefCell<Option<glib::SourceId>>,
         pub range: RefCell<RangeCoordinator>,
@@ -307,10 +312,11 @@ mod imp {
         /// generic metadata reload and update resident favorite badges in
         /// place instead.
         pub suppress_shared_projection_until: Cell<Option<std::time::Instant>>,
-        pub suppress_sync_projection: Cell<bool>,
-        pub pending_sync_items: RefCell<HashMap<i64, (MediaItem, bool)>>,
-        pub sync_update_source: RefCell<Option<glib::SourceId>>,
-        pub sync_update_loading: Cell<bool>,
+        pub suppress_incremental_projection: Cell<bool>,
+        pub(crate) pending_incremental_items:
+            RefCell<HashMap<i64, (MediaItem, IncrementalItemKind)>>,
+        pub incremental_update_source: RefCell<Option<glib::SourceId>>,
+        pub incremental_update_loading: Cell<bool>,
         pub(super) thumb_batcher: RefCell<ThumbnailBatcher>,
     }
 
@@ -348,16 +354,17 @@ mod imp {
                 layout_generation: Cell::new(0),
                 live_total: Cell::new(0),
                 metadata_reload_source: RefCell::new(None),
+                metadata_reload_reasons: RefCell::new(Vec::new()),
                 pending_column_width: Cell::new(0),
                 column_update_source: RefCell::new(None),
                 range: RefCell::new(RangeCoordinator::default()),
                 last_top_slot: Cell::new(0),
                 desired_window: Cell::new(None),
                 suppress_shared_projection_until: Cell::new(None),
-                suppress_sync_projection: Cell::new(false),
-                pending_sync_items: RefCell::new(HashMap::new()),
-                sync_update_source: RefCell::new(None),
-                sync_update_loading: Cell::new(false),
+                suppress_incremental_projection: Cell::new(false),
+                pending_incremental_items: RefCell::new(HashMap::new()),
+                incremental_update_source: RefCell::new(None),
+                incremental_update_loading: Cell::new(false),
                 thumb_batcher: RefCell::new(ThumbnailBatcher::default()),
             }
         }
@@ -383,7 +390,7 @@ mod imp {
 
     impl ObjectImpl for VirtualMediaGrid {
         fn dispose(&self) {
-            if let Some(source) = self.sync_update_source.borrow_mut().take() {
+            if let Some(source) = self.incremental_update_source.borrow_mut().take() {
                 source.remove();
             }
             if let Some(source) = self.metadata_reload_source.borrow_mut().take() {
@@ -513,7 +520,7 @@ impl VirtualMediaGrid {
 
         if initial_active {
             obj.seed_provisional_items();
-            obj.reload_metadata_now();
+            obj.reload_metadata_now("initial");
             obj.schedule_visible_range_after_layout();
         }
         obj
@@ -611,7 +618,7 @@ impl VirtualMediaGrid {
             self.seed_provisional_items();
         }
         if self.imp().metadata_dirty.replace(false) || !self.imp().metadata_ready.get() {
-            self.reload_metadata_now();
+            self.reload_metadata_now("activation");
         }
         // Events that arrived while this grid was inactive were dropped; the
         // resident range is already loaded, so no landing will ask for us.
@@ -898,8 +905,8 @@ impl VirtualMediaGrid {
     /// Called by the bounded shared-list projection after filesystem/domain
     /// events.  The list is only a signal/initial-seed source: authoritative
     /// metadata and ranges always come from `MediaRepository`.
-    pub fn refresh_from_shared_projection(&self) {
-        self.schedule_metadata_reload();
+    pub fn refresh_from_shared_projection(&self, reason: &'static str) {
+        self.schedule_metadata_reload(reason);
     }
 
     /// Suppress the shared ListStore's favorite-only replacement notifications
@@ -931,7 +938,7 @@ impl VirtualMediaGrid {
     }
 
     fn handle_shared_projection_items_changed(&self) {
-        if self.imp().suppress_sync_projection.get() {
+        if self.imp().suppress_incremental_projection.get() {
             return;
         }
         let now = std::time::Instant::now();
@@ -944,7 +951,7 @@ impl VirtualMediaGrid {
             return;
         }
         self.imp().suppress_shared_projection_until.set(None);
-        self.refresh_from_shared_projection();
+        self.refresh_from_shared_projection("shared_list_changed");
     }
 
     pub(super) fn spec(&self) -> VirtualGridModeSpec {
@@ -1383,7 +1390,7 @@ impl VirtualMediaGrid {
         self.replace_layout_with_initial_items(layout, items);
     }
 
-    fn reload_metadata_now(&self) {
+    fn reload_metadata_now(&self, direct_reason: &'static str) {
         if !self.imp().active.get() {
             self.imp().metadata_dirty.set(true);
             return;
@@ -1393,10 +1400,21 @@ impl VirtualMediaGrid {
             return;
         }
         self.imp().metadata_dirty.set(false);
+        let reasons = {
+            let mut reasons = self.imp().metadata_reload_reasons.borrow_mut();
+            if direct_reason != "scheduled" && !reasons.contains(&direct_reason) {
+                reasons.push(direct_reason);
+            }
+            if reasons.is_empty() {
+                reasons.push(direct_reason);
+            }
+            std::mem::take(&mut *reasons)
+        };
         let generation = self.imp().metadata_generation.get().saturating_add(1);
         self.imp().metadata_generation.set(generation);
         let mode = self.mode();
         let query = self.query();
+        let view = format!("{query:?}");
         let pool = self.loader().pool().clone();
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
@@ -1418,6 +1436,16 @@ impl VirtualMediaGrid {
             grid.imp().metadata_loading.set(false);
             match result {
                 Ok(Ok((total, counts, day_counts))) => {
+                    tracing::info!(
+                        target: crate::core::log_targets::BROWSING,
+                        surface = "grid",
+                        mode = ?mode,
+                        view = %view,
+                        reason = %reasons.join("+"),
+                        before = grid.model().layout().media_count(),
+                        after = total,
+                        "FULL_REFRESH_TRACE"
+                    );
                     grid.apply_authoritative_metadata(total, counts, day_counts)
                 }
                 Ok(Err(error)) => tracing::warn!(
@@ -1432,7 +1460,7 @@ impl VirtualMediaGrid {
                 ),
             }
             if grid.imp().metadata_dirty.replace(false) {
-                grid.schedule_metadata_reload();
+                grid.schedule_metadata_reload("rerun_dirty");
             }
         });
     }
@@ -1480,7 +1508,13 @@ impl VirtualMediaGrid {
         self.notify_view_changed();
     }
 
-    fn schedule_metadata_reload(&self) {
+    fn schedule_metadata_reload(&self, reason: &'static str) {
+        {
+            let mut reasons = self.imp().metadata_reload_reasons.borrow_mut();
+            if !reasons.contains(&reason) {
+                reasons.push(reason);
+            }
+        }
         if !self.imp().active.get() {
             self.imp().metadata_dirty.set(true);
             return;
@@ -1492,7 +1526,7 @@ impl VirtualMediaGrid {
         let source = glib::timeout_add_local_once(Duration::from_millis(120), move || {
             if let Some(grid) = weak.upgrade() {
                 *grid.imp().metadata_reload_source.borrow_mut() = None;
-                grid.reload_metadata_now();
+                grid.reload_metadata_now("scheduled");
             }
         });
         *self.imp().metadata_reload_source.borrow_mut() = Some(source);

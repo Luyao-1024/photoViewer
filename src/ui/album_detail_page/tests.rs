@@ -163,7 +163,7 @@ fn visible_real_album_refresh_loads_new_database_items() {
     let page = AlbumDetailPage::new(album, album_store.clone(), master, pool.clone(), loader);
 
     crate::core::db::insert_media_item(&pool, &new_item(2, "image/jpeg")).unwrap();
-    page.refresh_media_list_from_repository();
+    page.refresh_media_list_from_repository("test");
 
     assert!(
         pump_until(std::time::Duration::from_secs(2), || album_store.n_items()
@@ -213,7 +213,7 @@ fn visible_real_album_refresh_emits_single_addition_change() {
     });
 
     crate::core::db::insert_media_item(&pool, &new_item(2, "image/jpeg")).unwrap();
-    page.refresh_media_list_from_repository();
+    page.refresh_media_list_from_repository("test");
 
     assert!(
         pump_until(std::time::Duration::from_secs(2), || !changes
@@ -226,6 +226,41 @@ fn visible_real_album_refresh_emits_single_addition_change() {
             vec![(0, 0, 1)],
             "album refresh should emit one pure-addition change so MediaGrid can use its insertion path"
         );
+
+    // The database has not changed since. The refresh must leave the store
+    // untouched: a replacement would make the grid treat every painted tile as
+    // exchanged although the page is identical. That is what keeps admissions
+    // of not-yet-displayable cloud rows and downloads into other albums from
+    // flickering an open album during downlink.
+    page.refresh_media_list_from_repository("test");
+    pump_until(std::time::Duration::from_millis(1000), || false);
+    assert_eq!(
+        *changes.borrow(),
+        vec![(0, 0, 1)],
+        "an unchanged refresh must not emit any store change"
+    );
+}
+
+#[test]
+fn refresh_plan_distinguishes_unchanged_pages_from_insertions() {
+    let store = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+    let first = sample_item(1);
+    store.append(&glib::BoxedAnyObject::new(first.clone()));
+
+    assert!(matches!(
+        plan_refresh(&store, std::slice::from_ref(&first)),
+        RefreshPlan::Unchanged
+    ));
+
+    assert!(matches!(
+        plan_refresh(&store, &[first, sample_item(2)]),
+        RefreshPlan::Insert { position: 1, .. }
+    ));
+
+    assert!(matches!(
+        plan_refresh(&store, &[sample_item(3)]),
+        RefreshPlan::Replace
+    ));
 }
 
 /// Build an album page the way the sidebar does: a real folder album whose

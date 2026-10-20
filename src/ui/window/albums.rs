@@ -802,8 +802,8 @@ pub(crate) fn refresh_after_album_operation(nav: &adw::NavigationView) {
             "PHOTO_REFRESH_TRACE refresh_after_album_operation visible_page_type={}",
             visible_page_type
         );
-        window.refresh_shared_media_list_from_repository();
-        window.refresh_visible_album_detail_page();
+        window.refresh_shared_media_list_from_repository("album_operation");
+        window.refresh_visible_album_detail_page("album_operation");
         window.refresh_sidebar_snapshot_async();
     }
 }

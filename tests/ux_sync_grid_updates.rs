@@ -84,7 +84,7 @@ fn sync_download_keeps_existing_tiles_painted_and_selected() {
                 ) {
                     assert!(shell
                         .window
-                        .apply_synchronization_media_event(&event, &shell.media_list));
+                        .apply_incremental_media_event(&event, &shell.media_list));
                     received = true;
                 }
             }
@@ -100,8 +100,8 @@ fn sync_download_keeps_existing_tiles_painted_and_selected() {
     );
 
     // An availability notification for an already visible row must also avoid
-    // treating the row as a new insertion or replacing the whole layout.
-    let existing = photo_viewer::core::db::get_media_item(&shell.pool, shell.items[0].id).unwrap();
+    // treating the row as a new insertion or rebinding its painted thumbnail.
+    let existing = photo_viewer::core::db::get_media_item(&shell.pool, target.get()).unwrap();
     let update = DomainEvent::MediaUpdated {
         source: ChangeSource::Synchronization,
         items: vec![existing],
@@ -116,9 +116,20 @@ fn sync_download_keeps_existing_tiles_painted_and_selected() {
     };
     assert!(shell
         .window
-        .apply_synchronization_media_event(&update, &shell.media_list));
+        .apply_incremental_media_event(&update, &shell.media_list));
     shell.ui.wait_until(Duration::from_millis(400), || false);
     assert_eq!(grid.logical_media_count(), 7);
+    assert_eq!(
+        grid.tile_for_media(target).unwrap(),
+        tile,
+        "an availability update must keep the painted tile bound"
+    );
+    assert_eq!(picture.paintable().unwrap(), paintable);
+    assert_eq!(
+        replacements.get(),
+        0,
+        "an availability update must not reset or repaint the thumbnail"
+    );
     let target_y = tile.compute_bounds(&grid).unwrap().y();
     let newer_path = write_photo(&shell.photos_dir(), "newer-download", 3);
     let mut newer = LocalBackend::new_item_from_path(&newer_path)
@@ -143,7 +154,7 @@ fn sync_download_keeps_existing_tiles_painted_and_selected() {
             ) {
                 assert!(shell
                     .window
-                    .apply_synchronization_media_event(&event, &shell.media_list));
+                    .apply_incremental_media_event(&event, &shell.media_list));
             }
         }
         grid.logical_media_count() == 8
@@ -165,4 +176,52 @@ fn sync_download_keeps_existing_tiles_painted_and_selected() {
         "another photo's download must not reset or repaint this thumbnail"
     );
     assert!(grid.selected_ids().contains(&target));
+
+    // A download that sorts into the same day section as a painted photo must
+    // shift it without unbinding it. Replacing the section's shifted tail makes
+    // GtkGridView recreate every visible list item, which is the flicker seen
+    // while thumbnails stream in.
+    let same_day_path = write_photo(&shell.photos_dir(), "same-day-download", 4);
+    let mut same_day = LocalBackend::new_item_from_path(&same_day_path)
+        .unwrap()
+        .unwrap();
+    same_day.taken_at = Some(shell.items[3].sort_datetime());
+    shell
+        .db_actor
+        .execute_blocking(DbCommand::UpsertMediaBatch {
+            source: ChangeSource::Synchronization,
+            items: vec![same_day],
+        })
+        .unwrap();
+    assert!(
+        shell.ui.wait_until(Duration::from_secs(5), || {
+            while let Ok(event) = shell.db_events.as_ref().unwrap().borrow_mut().try_recv() {
+                if matches!(
+                    &event,
+                    DomainEvent::MediaUpserted {
+                        source: ChangeSource::Synchronization,
+                        ..
+                    }
+                ) {
+                    assert!(shell
+                        .window
+                        .apply_incremental_media_event(&event, &shell.media_list));
+                }
+            }
+            grid.logical_media_count() == 9
+        }),
+        "the same-day admission must insert the downloaded photo"
+    );
+    shell.ui.wait_until(Duration::from_millis(400), || false);
+    assert_eq!(
+        grid.tile_for_media(target).unwrap(),
+        tile,
+        "a same-day insertion must keep the painted tile bound"
+    );
+    assert_eq!(picture.paintable().unwrap(), paintable);
+    assert_eq!(
+        replacements.get(),
+        0,
+        "a same-day insertion must not reset or repaint this thumbnail"
+    );
 }

@@ -133,6 +133,29 @@ impl VirtualGridLayoutIndex {
         }
     }
 
+    /// Layout after one media slot is inserted into `section`, before that
+    /// section's final row is re-aligned.
+    ///
+    /// A `ListModel` insertion must report a slot count that includes the new
+    /// media slot. Compared with the old layout, the aligned result either
+    /// consumes one trailing filler or grows by a filler row, so the insertion
+    /// is announced against this transient index and the trailing fillers are
+    /// adjusted in a second notification. Keeping the two steps distinct lets
+    /// consumers move already-bound slots instead of replacing the section tail.
+    pub(crate) fn insert_media_slot(&self, section: usize) -> Option<Self> {
+        let mut next = self.clone();
+        let span = next.sections.get_mut(section)?;
+        span.media_len = span.media_len.checked_add(1)?;
+        span.slot_len = span.slot_len.checked_add(1)?;
+        for later in next.sections.iter_mut().skip(section + 1) {
+            later.media_start = later.media_start.checked_add(1)?;
+            later.slot_start = later.slot_start.checked_add(1)?;
+        }
+        next.media_count = next.media_count.checked_add(1)?;
+        next.slot_count = next.slot_count.checked_add(1)?;
+        Some(next)
+    }
+
     /// The effective column count. A requested zero column count becomes one.
     pub fn columns(&self) -> u32 {
         self.columns

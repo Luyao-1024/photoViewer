@@ -1085,33 +1085,49 @@ pub fn import_cached_thumbnail(
     mtime: Option<SystemTime>,
     bytes: &[u8],
 ) -> anyhow::Result<()> {
-    let stem = cache::cache_stem_for(cache_dir, uri, size, mtime)?;
-    if let Some(parent) = stem.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    // The bytes are decoded before they are published: a thumbnail that cannot
-    // be decoded would leave a cache file that every later read has to detect
-    // and delete again.
-    let path = stem.with_extension("jpg");
+    import_cached_thumbnails(cache_dir, uri, mtime, bytes, &[size])
+}
+
+/// Decode received bytes once and install every requested size. A download
+/// normally needs all three sizes, and JPEG decoding dominates the import, so
+/// decoding per size would triple that cost for no benefit.
+///
+/// Writes are atomic (temp file plus rename) but not fsynced, matching the
+/// normal generation path: a cache file lost in a crash is detected and
+/// regenerated, and syncing every imported thumbnail would add six synchronous
+/// writes per downloaded photo to the transfer loop.
+pub fn import_cached_thumbnails(
+    cache_dir: &std::path::Path,
+    uri: &str,
+    mtime: Option<SystemTime>,
+    bytes: &[u8],
+    sizes: &[ThumbnailSize],
+) -> anyhow::Result<()> {
+    // The bytes are decoded before anything is published: a thumbnail that
+    // cannot be decoded would leave a cache file that every later read has to
+    // detect and delete again.
     let glib_bytes = glib::Bytes::from(bytes);
     let stream = gtk4::gio::MemoryInputStream::from_bytes(&glib_bytes);
     let pixbuf = gdk_pixbuf::Pixbuf::from_stream(&stream, None::<&gtk4::gio::Cancellable>)?;
-    let scaled = decode::scale_pixbuf_to_fit(&pixbuf, size.max_dim());
-    let opaque = decode::ensure_opaque(&scaled);
-    let encoded = opaque.save_to_bufferv("jpeg", &[("quality", "90")])?;
-    let temporary = path.with_extension(format!("jpg.{}", uuid::Uuid::new_v4()));
-    {
-        use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
-        file.write_all(&encoded)?;
-        file.sync_all()?;
-    }
-    std::fs::rename(&temporary, &path)?;
-    if let Some(parent) = path.parent() {
-        std::fs::File::open(parent)?.sync_all()?;
+    for size in sizes {
+        let stem = cache::cache_stem_for(cache_dir, uri, *size, mtime)?;
+        if let Some(parent) = stem.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let path = stem.with_extension("jpg");
+        let scaled = decode::scale_pixbuf_to_fit(&pixbuf, size.max_dim());
+        let opaque = decode::ensure_opaque(&scaled);
+        let encoded = opaque.save_to_bufferv("jpeg", &[("quality", "90")])?;
+        let temporary = path.with_extension(format!("jpg.{}", uuid::Uuid::new_v4()));
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)?;
+            file.write_all(&encoded)?;
+        }
+        std::fs::rename(&temporary, &path)?;
     }
     Ok(())
 }

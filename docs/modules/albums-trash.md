@@ -41,7 +41,11 @@ state.
 
 Album rows are a derived projection over media rows. New refresh paths should
 route through `core::refresh::RefreshCoordinator` so album rebuilds are
-single-flight and repeated startup/watch events coalesce. UI pages should avoid
+single-flight and repeated startup/watch events coalesce. When a rebuild
+finishes with another request pending, the rerun waits 250 ms so a download that
+admits photos continuously cannot keep the album projection and its sidebar
+snapshot rebuilding back-to-back for the whole transfer; the pending mark is
+never dropped and the last state always lands. UI pages should avoid
 adding new direct `albums::refresh` calls; trash and favorite mutations should
 go through `MediaRepository` so DB updates, filesystem side effects, and derived
 album refreshes stay behind one core boundary.
@@ -155,7 +159,15 @@ the GTK `ListStore`; viewer navigation can resolve off-window neighbours through
 repository queries. A favorite/trash change refreshes the visible virtual-album
 window and sidebar counts without materializing the complete virtual album.
 Repository refreshes run on a blocking worker and carry a generation token so
-slow, stale results cannot update a page after a newer refresh.
+slow, stale results cannot update a page after a newer refresh. When the plan is
+a pure insertion, the splice runs inside
+`VirtualMediaGrid::begin_incremental_item_update`/`end_incremental_item_update`:
+the store only carries the page while canonical ranks come from the repository,
+and without that suppression every media event during native sync turns the
+splice into a full metadata reload (one per event, about every 150 ms during a
+downlink) that rebinds every painted tile. Repeated store replays of an item
+that is already resident at its canonical rank are dropped by the grid's
+incremental path instead of forcing a reload.
 
 Right-clicking an album row opens the custom overlay `GlassContextMenu`, not a
 `GtkPopover`, so the menu shares the same page-overlay glass rendering path as

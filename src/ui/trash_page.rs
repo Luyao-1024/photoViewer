@@ -447,7 +447,7 @@ impl TrashPage {
         self.imp().action_bar.get().set_revealed(false);
         grid.clear_selection();
         grid.set_multi_select_mode(true);
-        grid.refresh_from_shared_projection();
+        grid.refresh_from_shared_projection("trash_list_changed");
 
         // Only the first read shows the spinner: a later refresh keeps the tiles
         // on screen instead of blanking them for the duration of a count.

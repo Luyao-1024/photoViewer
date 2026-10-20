@@ -130,6 +130,16 @@ fn replacing_ready_range_only_retains_returned_items() {
 }
 
 #[test]
+fn ready_offset_lookup_finds_the_resident_media_offset() {
+    let model = VirtualMediaModel::new(layout());
+    model.replace_ready_range(1..3, vec![item(21), item(22)]);
+
+    assert_eq!(model.ready_offset_for_media_id(MediaId::from(21)), Some(1));
+    assert_eq!(model.ready_offset_for_media_id(MediaId::from(22)), Some(2));
+    assert_eq!(model.ready_offset_for_media_id(MediaId::from(23)), None);
+}
+
+#[test]
 fn eviction_turns_distant_items_back_into_placeholders() {
     let model = VirtualMediaModel::new(layout());
     model.replace_ready_range(0..4, vec![item(10), item(11), item(12), item(13)]);
@@ -256,10 +266,45 @@ fn favorite_update_keeps_resident_slot_identity_and_emits_no_model_change() {
 }
 
 #[test]
-fn sync_insertion_preserves_objects_outside_the_changed_date_section() {
+fn availability_update_refreshes_the_snapshot_without_replacing_the_slot_object() {
+    let model = VirtualMediaModel::new(layout());
+    model.replace_ready_range(0..1, vec![item(10)]);
+    let published = model.item(0).expect("ready slot should have an object");
+
+    let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let captured_changes = changes.clone();
+    model.connect_items_changed(move |_, position, removed, added| {
+        captured_changes
+            .borrow_mut()
+            .push((position, removed, added));
+    });
+
+    let mut available = item(10);
+    available.storage_location = crate::core::media::MediaLocation::Both;
+    model.update_ready_item_in_place(0, available);
+
+    assert!(changes.borrow().is_empty());
+    assert_eq!(
+        model.item(0).expect("slot identity should remain stable"),
+        published,
+        "a snapshot-only change must not replace a GridView list item"
+    );
+    let published = published
+        .downcast::<glib::BoxedAnyObject>()
+        .expect("virtual slot items use BoxedAnyObject");
+    assert!(matches!(
+        *published.borrow::<GridSlotState>(),
+        GridSlotState::Ready { ref item, .. }
+            if item.storage_location == crate::core::media::MediaLocation::Both
+    ));
+}
+
+#[test]
+fn insertion_shifts_ready_objects_without_replacing_them() {
     let model = VirtualMediaModel::new(layout());
     model.replace_ready_range(0..4, vec![item(4), item(3), item(2), item(1)]);
     let first = model.item(0).unwrap();
+    let shifted = model.item(1).unwrap();
     let older_section = model.item(4).unwrap();
     let changes = std::rc::Rc::new(RefCell::new(Vec::new()));
     model.connect_items_changed({
@@ -270,8 +315,16 @@ fn sync_insertion_preserves_objects_outside_the_changed_date_section() {
     counts.insert(layout().sections()[0].key.clone(), 4);
     counts.insert(layout().sections()[1].key.clone(), 1);
     model.insert_ready_item(VirtualGridLayoutIndex::new(&counts, 2), 1, item(5));
-    assert_eq!(*changes.borrow(), vec![(1, 3, 3)]);
+    // A real insertion (removed = 0) followed by the section's trailing filler
+    // adjustment. Replacing the shifted tail would make GtkGridView unbind and
+    // repaint every visible tile in the section.
+    assert_eq!(*changes.borrow(), vec![(1, 0, 1), (4, 1, 0)]);
     assert_eq!(model.item(0).unwrap(), first);
+    assert_eq!(
+        model.item(2).unwrap(),
+        shifted,
+        "a shifted ready slot must keep its list item"
+    );
     assert_eq!(model.item(4).unwrap(), older_section);
     assert_eq!(model.slot_state(1).unwrap().media_item().unwrap().id, 5);
     assert_eq!(model.slot_state(2).unwrap().media_item().unwrap().id, 3);
@@ -279,20 +332,61 @@ fn sync_insertion_preserves_objects_outside_the_changed_date_section() {
 }
 
 #[test]
-fn sync_insertion_moves_later_sections_without_replacing_their_objects() {
+fn insertion_moves_later_sections_without_replacing_their_objects() {
     let model = VirtualMediaModel::new(layout());
     model.replace_ready_range(0..4, vec![item(4), item(3), item(2), item(1)]);
     let older_section = model.item(4).unwrap();
+    let changes = std::rc::Rc::new(RefCell::new(Vec::new()));
+    model.connect_items_changed({
+        let changes = changes.clone();
+        move |_, position, removed, added| changes.borrow_mut().push((position, removed, added))
+    });
     let mut counts = HashMap::new();
     counts.insert(layout().sections()[0].key.clone(), 4);
     counts.insert(layout().sections()[1].key.clone(), 1);
     model.insert_ready_item(VirtualGridLayoutIndex::new(&counts, 2), 3, item(5));
+    assert_eq!(*changes.borrow(), vec![(3, 0, 1), (4, 1, 0)]);
+    changes.borrow_mut().clear();
     counts.insert(layout().sections()[0].key.clone(), 5);
     model.insert_ready_item(VirtualGridLayoutIndex::new(&counts, 2), 4, item(6));
+    // The section's last row was full, so the insertion adds one media slot and
+    // a new filler row: one insertion plus the remaining fillers.
+    assert_eq!(*changes.borrow(), vec![(4, 0, 1), (5, 0, 1)]);
     assert_eq!(model.item(6).unwrap(), older_section);
     let object = older_section.downcast::<glib::BoxedAnyObject>().unwrap();
     let snapshot = object.borrow::<GridSlotState>();
     assert_eq!(snapshot.slot(), 6);
     assert_eq!(snapshot.media_offset(), Some(5));
     assert_eq!(snapshot.media_item().unwrap().id, 1);
+}
+
+#[test]
+fn new_date_section_is_inserted_without_replacing_older_sections() {
+    let model = VirtualMediaModel::new(layout());
+    model.replace_ready_range(0..4, vec![item(4), item(3), item(2), item(1)]);
+    let older_section = model.item(4).unwrap();
+    let changes = std::rc::Rc::new(RefCell::new(Vec::new()));
+    model.connect_items_changed({
+        let changes = changes.clone();
+        move |_, position, removed, added| changes.borrow_mut().push((position, removed, added))
+    });
+    let mut counts = HashMap::new();
+    counts.insert(
+        SectionKey {
+            year: Some(2026),
+            month: Some(7),
+            day: Some(14),
+        },
+        1,
+    );
+    counts.insert(layout().sections()[0].key.clone(), 3);
+    counts.insert(layout().sections()[1].key.clone(), 1);
+    model.insert_ready_item(VirtualGridLayoutIndex::new(&counts, 2), 0, item(9));
+    assert_eq!(*changes.borrow(), vec![(0, 0, 2)]);
+    assert_eq!(model.slot_state(0).unwrap().media_item().unwrap().id, 9);
+    assert_eq!(model.item(6).unwrap(), older_section);
+    let object = older_section.downcast::<glib::BoxedAnyObject>().unwrap();
+    let snapshot = object.borrow::<GridSlotState>();
+    assert_eq!(snapshot.slot(), 6);
+    assert_eq!(snapshot.media_offset(), Some(4));
 }

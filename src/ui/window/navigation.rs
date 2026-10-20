@@ -621,13 +621,13 @@ impl MainWindow {
     /// changes. Album rows and counts refresh through the sidebar snapshot;
     /// this keeps the page's own filtered `ListStore` in sync while the user
     /// stays on that album.
-    pub fn refresh_visible_album_detail_page(&self) {
+    pub fn refresh_visible_album_detail_page(&self, reason: &'static str) {
         if let Some(album_detail) = self
             .browsing_stack()
             .visible_child()
             .and_downcast::<AlbumDetailPage>()
         {
-            album_detail.refresh_media_list_from_repository();
+            album_detail.refresh_media_list_from_repository(reason);
         }
     }
 }

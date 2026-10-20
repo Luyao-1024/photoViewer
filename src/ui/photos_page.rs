@@ -1221,7 +1221,7 @@ impl PhotosPage {
         self.apply_overview_sync_icon(sync.status, sync.cause);
     }
 
-    pub(crate) fn synchronization_grids(&self) -> Vec<VirtualMediaGrid> {
+    pub(crate) fn incremental_grids(&self) -> Vec<VirtualMediaGrid> {
         self.imp().grids.borrow().clone()
     }
 

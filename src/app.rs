@@ -232,7 +232,7 @@ fn apply_domain_event_to_legacy_ui(
     );
     if window
         .upgrade()
-        .is_some_and(|window| window.apply_synchronization_media_event(event, media_list))
+        .is_some_and(|window| window.apply_incremental_media_event(event, media_list))
     {
         album_refresh.mark_albums_dirty_async();
         return;
@@ -258,8 +258,8 @@ fn apply_domain_event_to_legacy_ui(
         DomainEvent::LiveCountDirty => {
             if let Some(window) = window.upgrade() {
                 window.refresh_library_counts();
-                window.refresh_shared_media_list_from_repository();
-                window.refresh_visible_album_detail_page();
+                window.refresh_shared_media_list_from_repository("live_count_dirty");
+                window.refresh_visible_album_detail_page("live_count_dirty");
                 window.refresh_cloud_badges();
             }
             album_refresh.mark_albums_dirty_async();
@@ -317,7 +317,7 @@ fn apply_domain_event_to_legacy_ui(
 
     if visible_album_detail_should_refresh(event) {
         if let Some(window) = window.upgrade() {
-            window.refresh_visible_album_detail_page();
+            window.refresh_visible_album_detail_page(album_detail_refresh_reason(event));
         }
     }
 }
@@ -331,6 +331,17 @@ fn visible_album_detail_should_refresh(event: &DomainEvent) -> bool {
             | DomainEvent::MediaRestored { .. }
             | DomainEvent::MediaUpdated { .. }
     )
+}
+
+fn album_detail_refresh_reason(event: &DomainEvent) -> &'static str {
+    match event {
+        DomainEvent::MediaUpserted { .. } => "media_upserted",
+        DomainEvent::MediaRemoved { .. } => "media_removed",
+        DomainEvent::MediaMovedToTrash { .. } => "media_moved_to_trash",
+        DomainEvent::MediaRestored { .. } => "media_restored",
+        DomainEvent::MediaUpdated { .. } => "media_updated",
+        _ => "media_event",
+    }
 }
 
 async fn initialize(

@@ -19,7 +19,7 @@ use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::types::{Type, Value};
 use rusqlite::{params_from_iter, OptionalExtension};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime};
 
@@ -1156,24 +1156,35 @@ fn rank_and_total(
     sort_key: i64,
     id: i64,
 ) -> Result<(u32, u32)> {
-    let sort = media_sort_expr(trashed);
     let total: u32 = conn.query_row(
         &format!("SELECT COUNT(*) FROM visible_media WHERE {where_clause}"),
         params_from_iter(filter_params.iter()),
         |r| r.get(0),
     )?;
+    let index = rank_before(conn, where_clause, filter_params, trashed, sort_key, id)?;
+    Ok((index, total))
+}
+
+fn rank_before(
+    conn: &rusqlite::Connection,
+    where_clause: &str,
+    filter_params: &[Value],
+    trashed: bool,
+    sort_key: i64,
+    id: i64,
+) -> Result<u32> {
+    let sort = media_sort_expr(trashed);
     let mut params = filter_params.to_vec();
     params.extend([
         Value::Integer(sort_key),
         Value::Integer(sort_key),
         Value::Integer(id),
     ]);
-    let index = conn.query_row(
+    Ok(conn.query_row(
         &format!("SELECT COUNT(*) FROM visible_media WHERE {where_clause} AND {sort} >= ? AND ({sort} > ? OR id > ?)"),
         params_from_iter(params.iter()),
         |r| r.get(0),
-    )?;
-    Ok((index, total))
+    )?)
 }
 
 /// Where `media_id` sits inside one query's result set: `(1-based rank, total)`.
@@ -1216,6 +1227,45 @@ pub fn media_position(
     // `rank_and_total` is a 0-based projection shared with the neighbour seek;
     // a position a person reads counts from one.
     Ok(Some((rank + 1, total)))
+}
+
+/// 0-based ranks for a batch of ids in one pass over the query's canonical
+/// order.
+///
+/// Admission used to run one `COUNT(*)` per changed photo, and each of those
+/// rescanned every row ahead of it. Photos admitted together are ranked
+/// together instead: walk the order once, record the requested ids, and stop
+/// after the last one. A batch near the top of the timeline only scans a prefix.
+pub fn media_ranks_in_order(
+    pool: &DbPool,
+    media_ids: &[i64],
+    where_clause: &str,
+    filter_params: &[Value],
+    trashed: bool,
+) -> Result<HashMap<i64, u32>> {
+    if media_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let wanted = media_ids.iter().copied().collect::<HashSet<_>>();
+    let conn = pool.get()?;
+    let sort = media_sort_expr(trashed);
+    let mut stmt = conn.prepare(&format!(
+        "SELECT id FROM visible_media WHERE {where_clause} ORDER BY {sort} DESC, id DESC"
+    ))?;
+    let mut rows = stmt.query(params_from_iter(filter_params.iter()))?;
+    let mut ranks = HashMap::with_capacity(wanted.len());
+    let mut rank = 0u32;
+    while let Some(row) = rows.next()? {
+        let id: i64 = row.get(0)?;
+        if wanted.contains(&id) {
+            ranks.insert(id, rank);
+            if ranks.len() == wanted.len() {
+                break;
+            }
+        }
+        rank = rank.saturating_add(1);
+    }
+    Ok(ranks)
 }
 
 /// Index seek for navigation: no full-result ranking, count, or global offset.
@@ -1894,4 +1944,72 @@ fn row_to_media_item(row: &rusqlite::Row) -> rusqlite::Result<MediaItem> {
         },
         thumbnail_ready: row.get::<_, bool>(17)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn item(
+        name: &str,
+        taken_at: Option<DateTime<Utc>>,
+        file_mtime: DateTime<Utc>,
+    ) -> NewMediaItem {
+        NewMediaItem {
+            uri: format!("file:///library/{name}.jpg"),
+            path: PathBuf::from(format!("/library/{name}.jpg")),
+            folder_path: PathBuf::from("/library"),
+            mime_type: "image/jpeg".into(),
+            media_subkind: "standard".into(),
+            media_attributes: "{}".into(),
+            width: Some(100),
+            height: Some(100),
+            video_duration_secs: None,
+            taken_at,
+            file_mtime,
+            file_size: 1000,
+            blake3_hash: format!("hash-{name}"),
+        }
+    }
+
+    #[test]
+    fn batch_ranks_match_the_full_position_projection() {
+        let dir = tempdir().unwrap();
+        let pool = init_pool(&dir.path().join("position.db")).unwrap();
+        let base = Utc.with_ymd_and_hms(2026, 7, 5, 12, 0, 0).unwrap();
+        let items = [
+            item("newest", Some(base), base),
+            item("night", Some(base - chrono::Duration::hours(18)), base),
+            item("tie-a", Some(base - chrono::Duration::days(1)), base),
+            item("tie-b", Some(base - chrono::Duration::days(1)), base),
+            item("mtime", None, base - chrono::Duration::days(2)),
+        ];
+        let ids = items
+            .iter()
+            .map(|item| insert_media_item(&pool, item).unwrap())
+            .collect::<Vec<_>>();
+
+        let ranks = media_ranks_in_order(&pool, &ids, "trashed_at IS NULL", &[], false).unwrap();
+        assert_eq!(ranks.len(), ids.len());
+        for id in &ids {
+            let (one_based, _) = media_position(&pool, *id, "trashed_at IS NULL", &[], false)
+                .unwrap()
+                .expect("fixture row is live");
+            assert_eq!(
+                ranks.get(id).copied(),
+                Some(one_based - 1),
+                "rank mismatch for media {id}"
+            );
+        }
+        assert!(!ranks.contains_key(&(ids.len() as i64 + 1_000)));
+
+        // A filter that matches none of the batch yields no ranks, so the grid
+        // treats every event as belonging to another query.
+        assert!(
+            media_ranks_in_order(&pool, &ids, "trashed_at IS NOT NULL", &[], true)
+                .unwrap()
+                .is_empty()
+        );
+    }
 }

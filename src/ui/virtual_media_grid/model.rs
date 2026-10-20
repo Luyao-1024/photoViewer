@@ -245,68 +245,84 @@ impl VirtualMediaModel {
         self.items_changed(0, old_slots, new_slots);
     }
 
-    /// Insert newly visible media without replacing unaffected date sections.
-    /// A section's trailing filler is replaced together with its shifted tail;
-    /// later sections keep their GObjects and their already painted tiles.
+    /// Insert newly visible media with real `ListModel` insertion semantics.
+    ///
+    /// Replacing a section's shifted tail would make GtkGridView unbind and
+    /// rebind every realized tile in that section, which shows up as the grid
+    /// flickering while thumbnails stream in. A media insertion only adds one
+    /// slot; the section's trailing filler is then adjusted separately so
+    /// already-bound slots keep their `GObject` identity.
     pub fn insert_ready_item(&self, layout: VirtualGridLayoutIndex, offset: u32, item: MediaItem) {
-        let (start, removed, added) = {
-            let mut state = self.imp().state.borrow_mut();
-            let old_layout = state.layout.clone();
-            let start = layout
-                .slot_for_media_offset(offset)
-                .expect("inserted media offset");
-            let section = layout
-                .sections()
-                .iter()
-                .find(|span| span.media_start <= offset && offset < span.media_end())
-                .expect("inserted media section");
-            let old_end = old_layout
-                .sections()
-                .iter()
-                .find(|old| old.key == section.key)
-                .map_or(start, |old| old.slot_end());
-            let removed = old_end.saturating_sub(start);
-            let added = section.slot_end().saturating_sub(start);
-            let ready = std::mem::take(&mut state.ready_by_offset);
-            state.ready_by_offset = ready
-                .into_iter()
-                .map(|(old, item)| (if old >= offset { old + 1 } else { old }, item))
-                .collect();
-            state.ready_by_offset.insert(offset, item);
-            state.layout = layout.clone();
-            let objects = std::mem::take(&mut state.slot_objects);
-            for (old_slot, weak) in objects {
-                if (start..old_end).contains(&old_slot) {
-                    continue;
-                }
-                let new_slot = match old_layout.slot_at(old_slot) {
-                    Some(GridSlot::MediaOffset(old)) => {
-                        layout.slot_for_media_offset(if old >= offset { old + 1 } else { old })
-                    }
-                    Some(GridSlot::Filler { section }) => {
-                        let old = &old_layout.sections()[section];
-                        let filler = old_slot - old.slot_start - old.media_len;
-                        layout
-                            .sections()
-                            .iter()
-                            .find(|span| span.key == old.key)
-                            .filter(|span| filler < span.filler_len())
-                            .map(|span| span.slot_start + span.media_len + filler)
-                    }
-                    None => None,
-                };
-                if let Some(new_slot) = new_slot {
-                    if let Some(object) = weak.upgrade() {
-                        if let Some(snapshot) = slot_state_at(&state, new_slot) {
-                            *object.borrow_mut::<GridSlotState>() = snapshot;
-                        }
-                    }
-                    state.slot_objects.insert(new_slot, weak);
-                }
-            }
-            (start, removed, added)
+        let mut state = self.imp().state.borrow_mut();
+        let old_layout = state.layout.clone();
+        let Some((new_section_index, section)) = layout
+            .sections()
+            .iter()
+            .enumerate()
+            .find(|(_, span)| span.media_start <= offset && offset < span.media_end())
+            .map(|(index, span)| (index, span.clone()))
+        else {
+            return;
         };
-        self.items_changed(start, removed, added);
+        let start = section
+            .slot_start
+            .saturating_add(offset.saturating_sub(section.media_start));
+
+        let transient = match old_layout
+            .sections()
+            .iter()
+            .position(|span| span.key == section.key)
+        {
+            Some(index) => match old_layout.insert_media_slot(index) {
+                Some(transient) => Some((index, transient)),
+                None => return,
+            },
+            None => None,
+        };
+
+        let ready = std::mem::take(&mut state.ready_by_offset);
+        state.ready_by_offset = ready
+            .into_iter()
+            .map(|(old, item)| (if old >= offset { old + 1 } else { old }, item))
+            .collect();
+        state.ready_by_offset.insert(offset, item);
+
+        let Some((old_section_index, transient)) = transient else {
+            // A brand-new date section inserts its media and filler slots at
+            // once; older sections only shift.
+            remap_slot_objects(&mut state, &old_layout, &layout, Some(offset));
+            state.layout = layout;
+            drop(state);
+            self.items_changed(start, 0, section.slot_len);
+            return;
+        };
+
+        // Announce one media slot against a transient layout that keeps the
+        // old section end where it was. This is what lets consumers move the
+        // shifted slots instead of replacing them.
+        let transient_section_end = transient.sections()[old_section_index].slot_end();
+        remap_slot_objects(&mut state, &old_layout, &transient, Some(offset));
+        state.layout = transient.clone();
+        drop(state);
+        self.items_changed(start, 0, 1);
+
+        let mut state = self.imp().state.borrow_mut();
+        remap_slot_objects(&mut state, &transient, &layout, None);
+        let final_section_end = layout.sections()[new_section_index].slot_end();
+        state.layout = layout;
+        drop(state);
+
+        if final_section_end < transient_section_end {
+            // The insertion consumed the section's trailing filler.
+            self.items_changed(transient_section_end.saturating_sub(1), 1, 0);
+        } else if final_section_end > transient_section_end {
+            // The inserted media completed the final row and opened a new one.
+            self.items_changed(
+                transient_section_end,
+                0,
+                final_section_end - transient_section_end,
+            );
+        }
     }
 
     /// Availability events can replace cached thumbnail bytes without changing
@@ -321,6 +337,27 @@ impl VirtualMediaModel {
             slot
         };
         self.emit_replacements(vec![slot]);
+    }
+
+    /// Update a resident snapshot in place when the fields a bound tile renders
+    /// did not change, so the tile keeps its painted thumbnail.
+    pub fn update_ready_item_in_place(&self, offset: u32, item: MediaItem) {
+        let mut state = self.imp().state.borrow_mut();
+        let Some(slot) = state.layout.slot_for_media_offset(offset) else {
+            return;
+        };
+        state.ready_by_offset.insert(offset, item.clone());
+        let Some(object) = state
+            .slot_objects
+            .get(&slot)
+            .and_then(|weak| weak.upgrade())
+        else {
+            return;
+        };
+        let mut snapshot = object.borrow_mut::<GridSlotState>();
+        if let GridSlotState::Ready { item: resident, .. } = &mut *snapshot {
+            **resident = item;
+        }
     }
 
     pub fn slot_for_media_id(&self, id: MediaId) -> Option<u32> {
@@ -458,6 +495,16 @@ impl VirtualMediaModel {
             .cloned()
     }
 
+    pub fn ready_offset_for_media_id(&self, media_id: MediaId) -> Option<u32> {
+        self.imp()
+            .state
+            .borrow()
+            .ready_by_offset
+            .iter()
+            .find(|(_, item)| item.id == media_id.get())
+            .map(|(offset, _)| *offset)
+    }
+
     pub fn ready_item_count(&self) -> usize {
         self.imp().state.borrow().ready_by_offset.len()
     }
@@ -554,10 +601,18 @@ impl VirtualMediaModel {
 }
 
 fn slot_state_at(state: &ModelState, position: u32) -> Option<GridSlotState> {
-    match state.layout.slot_at(position)? {
+    slot_state_with_layout(state, &state.layout, position)
+}
+
+fn slot_state_with_layout(
+    state: &ModelState,
+    layout: &VirtualGridLayoutIndex,
+    position: u32,
+) -> Option<GridSlotState> {
+    match layout.slot_at(position)? {
         GridSlot::Filler { section } => Some(GridSlotState::Filler {
             slot: position,
-            section: state.layout.section_span(section)?.key.clone(),
+            section: layout.section_span(section)?.key.clone(),
         }),
         GridSlot::MediaOffset(media_offset) => match state.ready_by_offset.get(&media_offset) {
             Some(item) => Some(GridSlotState::Ready {
@@ -570,6 +625,52 @@ fn slot_state_at(state: &ModelState, position: u32) -> Option<GridSlotState> {
                 media_offset,
             }),
         },
+    }
+}
+
+/// Moves cached slot objects from one layout to another, refreshing their
+/// snapshots but keeping each `GObject` where a consumer still holds it.
+///
+/// `shift_media_at_or_after` inserts one logical media offset: every offset at
+/// or past it moves by one, and filler slots stay attached to their section by
+/// filler index.
+fn remap_slot_objects(
+    state: &mut ModelState,
+    from: &VirtualGridLayoutIndex,
+    to: &VirtualGridLayoutIndex,
+    shift_media_at_or_after: Option<u32>,
+) {
+    let objects = std::mem::take(&mut state.slot_objects);
+    for (old_slot, weak) in objects {
+        let new_slot = match from.slot_at(old_slot) {
+            Some(GridSlot::MediaOffset(old_offset)) => {
+                let offset = match shift_media_at_or_after {
+                    Some(threshold) if old_offset >= threshold => old_offset.saturating_add(1),
+                    _ => old_offset,
+                };
+                to.slot_for_media_offset(offset)
+            }
+            Some(GridSlot::Filler { section }) => {
+                let old_span = &from.sections()[section];
+                let filler = old_slot
+                    .saturating_sub(old_span.slot_start)
+                    .saturating_sub(old_span.media_len);
+                to.sections()
+                    .iter()
+                    .find(|span| span.key == old_span.key)
+                    .filter(|span| filler < span.filler_len())
+                    .map(|span| span.slot_start + span.media_len + filler)
+            }
+            None => None,
+        };
+        if let Some(new_slot) = new_slot {
+            if let Some(object) = weak.upgrade() {
+                if let Some(snapshot) = slot_state_with_layout(state, to, new_slot) {
+                    *object.borrow_mut::<GridSlotState>() = snapshot;
+                }
+            }
+            state.slot_objects.insert(new_slot, weak);
+        }
     }
 }
 

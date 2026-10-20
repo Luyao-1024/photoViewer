@@ -1052,7 +1052,7 @@ impl SearchPage {
             .borrow_mut()
             .retain(|item| !raw_ids.contains(&item.id));
         for grid in self.imp().detail_grids.borrow().iter() {
-            grid.refresh_from_shared_projection();
+            grid.refresh_from_shared_projection("search_list_changed");
         }
         // Trashing the last hit from the result grid has to reach the same
         // verdict as a query that never returned anything.

@@ -25,6 +25,7 @@ use crate::core::repository::MediaQuery;
 use crate::core::runtime_config;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::album_detail_page::AlbumDetailPage;
+use crate::ui::virtual_media_grid::IncrementalItemKind;
 use crate::ui::TrashPage;
 use crate::ui::{keyboard, PhotosPage, SearchPage, ViewerPage};
 use albums::album_backfill_fetch_limit;
@@ -326,6 +327,11 @@ mod imp {
         pub settings_dialog: RefCell<Option<adw::Dialog>>,
         /// Invalidate the native settings snapshot on a synchronization event.
         pub native_sync_refresh: RefCell<Option<std::rc::Rc<dyn Fn(bool)>>>,
+        /// Sync progress arrives once per downloaded resource. A refresh may
+        /// start immediately, but bursts coalesce into one trailing refresh
+        /// instead of repeating the overview counts for every photo.
+        pub sync_refresh_cooldown: Cell<bool>,
+        pub sync_refresh_pending: Cell<bool>,
         #[template_child]
         pub root_overlay: TemplateChild<gtk::Overlay>,
         #[template_child]
@@ -899,7 +905,7 @@ impl MainWindow {
     /// Reload the bounded live-media window backing the Photos page. This is
     /// used by album operations that mutate DB rows outside the DB actor event
     /// stream, such as Copy/Move from the album picker.
-    pub fn refresh_shared_media_list_from_repository(&self) {
+    pub fn refresh_shared_media_list_from_repository(&self, reason: &'static str) {
         let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
             return;
         };
@@ -918,7 +924,7 @@ impl MainWindow {
             items.len(),
             limit
         );
-        apply_media_projection_to_list(&media_list, items);
+        apply_media_projection_to_list(&media_list, items, reason);
         tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "PHOTO_REFRESH_TRACE shared_refresh_applied final_len={}",
@@ -978,18 +984,34 @@ impl MainWindow {
     }
 
     /// Apply download events without turning a one-photo change into a full
-    /// Photos layout reload. Returns false for events requiring normal routing.
-    pub fn apply_synchronization_media_event(
+    /// Photos layout reload. Local additions use the same path when the batch
+    /// is small enough to be an ordinary import rather than a bulk scan; the
+    /// grid itself falls back to a metadata reload when the count delta cannot
+    /// prove that every changed item is new. Returns false for events requiring
+    /// normal routing.
+    pub fn apply_incremental_media_event(
         &self,
         event: &crate::core::events::DomainEvent,
         media_list: &gtk::gio::ListStore,
     ) -> bool {
+        /// Bulk rescan/import batches keep the full reload so one directory copy
+        /// cannot emit hundreds of individual GridView structural changes.
+        const MAX_INCREMENTAL_UPSERT_ITEMS: usize = 32;
+
         use crate::core::events::{ChangeSource, DomainEvent};
-        let (items, inserted) = match event {
+        let (items, kind) = match event {
             DomainEvent::MediaUpserted {
                 source: ChangeSource::Synchronization,
                 items,
-            } if items.iter().all(MediaItem::can_display) => (items, true),
+            } if items.iter().all(MediaItem::can_display) => (items, IncrementalItemKind::Inserted),
+            DomainEvent::MediaUpserted { source, items }
+                if *source != ChangeSource::StartupScan
+                    && !items.is_empty()
+                    && items.len() <= MAX_INCREMENTAL_UPSERT_ITEMS
+                    && items.iter().all(MediaItem::can_display) =>
+            {
+                (items, IncrementalItemKind::Upsert)
+            }
             DomainEvent::MediaUpdated {
                 source: ChangeSource::Synchronization,
                 items,
@@ -999,7 +1021,7 @@ impl MainWindow {
                 && !fields.trash
                 && items.iter().all(MediaItem::can_display) =>
             {
-                (items, false)
+                (items, IncrementalItemKind::Updated)
             }
             _ => return false,
         };
@@ -1007,24 +1029,47 @@ impl MainWindow {
             return false;
         };
         let grids = if let Ok(photos) = page.clone().downcast::<PhotosPage>() {
-            photos.synchronization_grids()
+            photos.incremental_grids()
         } else if let Ok(album) = page.downcast::<crate::ui::AlbumDetailPage>() {
             album.imp().grid.borrow().iter().cloned().collect()
         } else {
             return false;
         };
         for grid in &grids {
-            grid.begin_sync_item_update(items, inserted);
+            grid.begin_incremental_item_update(items, kind);
         }
         crate::ui::apply_to_media_list::apply_to_media_list(media_list, event);
         for grid in &grids {
-            grid.end_sync_item_update();
+            grid.end_incremental_item_update();
         }
         true
     }
 
     /// Apply a sync domain event to its overview, settings and cloud badges.
+    ///
+    /// A running download emits one invalidation per resource. Refreshing on
+    /// the leading event and then once per cooldown keeps progress visible
+    /// without rescanning the library counts dozens of times per second.
     pub fn refresh_sync_state(&self) {
+        if self.imp().sync_refresh_cooldown.get() {
+            self.imp().sync_refresh_pending.set(true);
+            return;
+        }
+        self.refresh_sync_state_now();
+        self.imp().sync_refresh_cooldown.set(true);
+        let weak = self.downgrade();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            this.imp().sync_refresh_cooldown.set(false);
+            if this.imp().sync_refresh_pending.replace(false) {
+                this.refresh_sync_state();
+            }
+        });
+    }
+
+    fn refresh_sync_state_now(&self) {
         if let Some(refresh) = self.imp().native_sync_refresh.borrow().as_ref() {
             refresh(true);
         }
@@ -1084,11 +1129,16 @@ impl MainWindow {
     }
 }
 
-fn apply_media_projection_to_list(list: &gtk::gio::ListStore, refreshed: Vec<MediaItem>) {
+fn apply_media_projection_to_list(
+    list: &gtk::gio::ListStore,
+    refreshed: Vec<MediaItem>,
+    reason: &'static str,
+) {
     let current_len = list.n_items();
     if apply_pure_media_insertions(list, &refreshed) {
         tracing::debug!(
             target: crate::core::log_targets::BROWSING,
+            reason,
             "PHOTO_REFRESH_TRACE projection_strategy=pure_insert before_len={} refreshed_len={} after_len={}",
             current_len,
             refreshed.len(),
@@ -1096,8 +1146,17 @@ fn apply_media_projection_to_list(list: &gtk::gio::ListStore, refreshed: Vec<Med
         );
         return;
     }
+    tracing::info!(
+        target: crate::core::log_targets::BROWSING,
+        surface = "photos_shared_list",
+        reason,
+        before = current_len,
+        after = refreshed.len(),
+        "FULL_REFRESH_TRACE"
+    );
     tracing::debug!(
         target: crate::core::log_targets::BROWSING,
+        reason,
         "PHOTO_REFRESH_TRACE projection_strategy=full_replace before_len={} refreshed_len={}",
         current_len,
         refreshed.len()
