@@ -19,8 +19,33 @@ fn named<T: IsA<gtk::Widget> + glib::object::IsClass + Clone + glib::object::Obj
         .unwrap_or_else(|| panic!("missing widget {name}"))
 }
 use gtk::glib;
+fn server_binary() -> Option<std::path::PathBuf> {
+    if let Ok(path) = std::env::var("SYNC_SERVER_BIN") {
+        let path = std::path::PathBuf::from(path);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    for build in ["debug", "release"] {
+        let path = std::path::Path::new("../syncserver/target")
+            .join(build)
+            .join("syncserver");
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    None
+}
+
 #[test]
 fn native_settings_probe_drafts_and_scope_use_real_controls() {
+    if server_binary().is_none() {
+        eprintln!(
+            "SKIP ux_native_sync_settings: SyncServer binary not found. Build the sibling \
+             ../syncserver checkout or set SYNC_SERVER_BIN."
+        );
+        return;
+    }
     let _sandbox = photo_viewer::testing::Sandbox::install();
     gtk::init().unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
