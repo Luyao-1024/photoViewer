@@ -8,9 +8,36 @@ use photo_viewer::core::{
 };
 use std::{
     io::Write,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
+
+fn server_binary() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("SYNC_SERVER_BIN") {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Some(path);
+        }
+        eprintln!("SYNC_SERVER_BIN={path:?} does not exist; ignoring it");
+    }
+    for build in ["debug", "release"] {
+        let path = Path::new("../syncserver/target")
+            .join(build)
+            .join("syncserver");
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn skip() {
+    eprintln!(
+        "SKIP native_sync_accounts: SyncServer binary not found. Build the sibling \
+         ../syncserver checkout or set SYNC_SERVER_BIN."
+    );
+}
 struct Server {
     child: Child,
     endpoint: String,
@@ -95,6 +122,9 @@ impl Server {
 }
 #[tokio::test(flavor = "multi_thread")]
 async fn switching_accounts_preserves_isolation_and_only_one_account_can_sync() {
+    if server_binary().is_none() {
+        return skip();
+    }
     let sandbox = photo_viewer::testing::Sandbox::install();
     common::credentials::install();
     let server = Server::start().await;
@@ -323,6 +353,9 @@ async fn switching_accounts_preserves_isolation_and_only_one_account_can_sync() 
 
 #[tokio::test(flavor = "multi_thread")]
 async fn explicit_legacy_owner_login_preserves_the_existing_photo_and_progress() {
+    if server_binary().is_none() {
+        return skip();
+    }
     let sandbox = photo_viewer::testing::Sandbox::install();
     common::credentials::install();
     let server = Server::start_mode(true).await;
