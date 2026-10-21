@@ -171,6 +171,32 @@ fn create_operation(name: &str) -> Value {
     })
 }
 
+/// Issue one exact logical mutation under a lease, the way the coordinator
+/// does. The body and idempotency key are the test's, not the client's: these
+/// cases pin what the service does with a receipt, not how a request is built.
+fn send_modify(
+    server: &Server,
+    pinned: &NativePinnedScope,
+    proof: &photo_viewer::core::sync::native::lease::LeaseProof,
+    body: &Value,
+    key: &str,
+) -> (reqwest::StatusCode, Vec<u8>) {
+    let mut request = reqwest::Client::new()
+        .post(modify_url(server, pinned))
+        .bearer_auth(&server.api_key)
+        .header("Content-Type", "application/json")
+        .header("Idempotency-Key", key)
+        .body(serde_json::to_vec(body).expect("body"));
+    for (name, value) in photo_viewer::core::sync::native::lease::lease_headers(proof) {
+        request = request.header(name, value);
+    }
+    block_on(async {
+        let response = request.send().await.expect("modify");
+        let status = response.status();
+        (status, response.bytes().await.expect("body").to_vec())
+    })
+}
+
 fn mode(bits: u32) -> std::fs::Permissions {
     use std::os::unix::fs::PermissionsExt;
     std::fs::Permissions::from_mode(bits)
@@ -468,13 +494,13 @@ fn a_zone_that_moved_is_not_current_until_the_client_catches_up() {
         "atomic": true,
         "operations": [create_operation("album-after-position")],
     });
-    let (status, _) = block_on(writer.inner.send_with_proof(
-        &modify_url(&server, &writer.pinned()),
-        serde_json::to_vec(&body).unwrap(),
+    let (status, _) = send_modify(
+        &server,
+        &writer.pinned(),
         &writer_proof,
-        Some("pv-zone-move"),
-    ))
-    .expect("modify");
+        &body,
+        "pv-zone-move",
+    );
     assert!(status.is_success(), "{status}");
     block_on(writer.inner.release_lease(&writer_proof)).expect("release");
 
@@ -561,15 +587,8 @@ fn an_operation_receipt_is_readable_after_the_lease_is_gone() {
         "atomic": true,
         "operations": [create_operation("album-receipt")],
     });
-    let url = modify_url(&server, &pinned);
-    let payload = serde_json::to_vec(&body).unwrap();
     let key = "pv-1-metadata-1";
-    let (status, bytes) = block_on(
-        client
-            .inner
-            .send_with_proof(&url, payload, &proof, Some(key)),
-    )
-    .expect("modify");
+    let (status, bytes) = send_modify(&server, &pinned, &proof, &body, key);
     let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     assert!(status.is_success(), "{status}: {value}");
     assert_eq!(
@@ -626,22 +645,10 @@ fn a_replayed_mutation_returns_the_same_receipt() {
         "atomic": true,
         "operations": [create_operation("album-idempotent")],
     });
-    let url = modify_url(&server, &pinned);
-    let payload = serde_json::to_vec(&body).unwrap();
     let key = "pv-1-metadata-9";
 
-    let first = block_on(
-        client
-            .inner
-            .send_with_proof(&url, payload.clone(), &proof, Some(key)),
-    )
-    .expect("first");
-    let second = block_on(
-        client
-            .inner
-            .send_with_proof(&url, payload, &proof, Some(key)),
-    )
-    .expect("replay");
+    let first = send_modify(&server, &pinned, &proof, &body, key);
+    let second = send_modify(&server, &pinned, &proof, &body, key);
     assert!(first.0.is_success() && second.0.is_success());
     let first: Value = serde_json::from_slice(&first.1).unwrap();
     let second: Value = serde_json::from_slice(&second.1).unwrap();

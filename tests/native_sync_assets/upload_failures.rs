@@ -416,12 +416,15 @@ fn a_receipt_confirmation_failure_is_skipped_until_the_next_cycle() {
             .set_phase(lease.proof(), UploadPhase::Modify)
             .await
             .unwrap();
-        let mut url = client.cloudkit_base(&scope.namespace).unwrap();
-        url.path_segments_mut()
-            .unwrap()
-            .pop_if_empty()
-            .push("records")
-            .push("modify");
+        let url = format!(
+            "{}database/1/{}/{}/{}/records/modify",
+            f._server.base_url,
+            scope.namespace.container,
+            scope.namespace.environment,
+            scope.namespace.database
+        )
+        .parse::<url::Url>()
+        .expect("cloudkit modify URL");
         let mut request = reqwest::Client::new()
             .post(url)
             .bearer_auth(&f._server.api_key)

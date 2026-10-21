@@ -17,9 +17,9 @@ pub use model::{ProviderKind, SyncDirection, UploadScope};
 pub use native::lease::{UploadLease, UploadPhase};
 pub use native::records::{AssetDescriptor, RemoteGraph, RemotePhoto, RemoteResource};
 pub use native::{
-    LeaseProof, ModifyOutcome, MutationBatch, NativeCapabilitiesResponse, NativeCapabilityBits,
-    NativeClient, NativeEndpoint, NativeLimits, NativeNamespace, NativePinnedScope,
-    NativeProbeFailure, NativeProvider, NativeSyncLimits, NativeZone, OperationState, ZoneId,
+    LeaseProof, NativeCapabilitiesResponse, NativeCapabilityBits, NativeClient, NativeEndpoint,
+    NativeLimits, NativeNamespace, NativePinnedScope, NativeProbeFailure, NativeProvider,
+    NativeSyncLimits, NativeZone, OperationState, ZoneId,
 };
 pub use service::SyncService;
 pub use store::{

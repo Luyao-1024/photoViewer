@@ -2050,6 +2050,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sync-client",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
@@ -2761,6 +2762,23 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "sync-client"
+version = "0.1.0"
+source = "git+https://github.com/Luyao-1024/syncserver.git?rev=9097be58dbec0cc441ebb46068dc81f72d537368#9097be58dbec0cc441ebb46068dc81f72d537368"
+dependencies = [
+ "base64",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "url",
+ "uuid",
 ]
 
 [[package]]

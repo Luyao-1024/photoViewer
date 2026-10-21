@@ -160,58 +160,26 @@ fn a_gate_that_has_not_passed_reports_no_permission_to_upload() {
 }
 
 #[test]
-fn a_renewal_response_carries_no_heartbeat_and_the_client_does_not_invent_one() {
-    // The heartbeat interval comes from the grant. Reading it from a renewal
-    // that omits it would silently reset the client's schedule to a default.
-    let response: RenewResponse =
-        serde_json::from_str(r#"{"leaseId":"x","expiresAtMs":1,"ttlSeconds":90}"#).unwrap();
-    assert_eq!(response.ttl_seconds, 90);
+fn a_renewal_response_is_owned_by_the_sdk_test_suite() {
+    // The SDK parses renewals too: the local client only records the returned
+    // TTL against the instant the request left.
 }
 
 #[test]
-fn lease_failure_codes_map_to_the_decision_they_imply() {
-    // Acquisition contention and loss arrive as distinct codes and must not
-    // collapse: one skips the cycle's uplink, the other ends it.
-    assert!(matches!(
-        lease_error(
-            409,
-            br#"{"serverErrorCode":"UPLOAD_LOCK_BUSY","reason":"held"}"#
-        ),
-        SyncError::RateLimited
-    ));
-    assert!(matches!(
-        lease_error(409, br#"{"serverErrorCode":"UPLOAD_LEASE_LOST","reason":"gone"}"#),
-        SyncError::Unsupported(message) if message.contains(UPLOAD_LEASE_LOST)
-    ));
-    assert!(matches!(
-        lease_error(
-            409,
-            br#"{"serverErrorCode":"SYNC_NOT_CURRENT","reason":"behind"}"#
-        ),
-        SyncError::PreconditionFailed(_)
-    ));
-    // Anything unrecognised falls back to the shared status mapping rather than
-    // being guessed at.
-    assert!(matches!(
-        lease_error(
-            500,
-            br#"{"serverErrorCode":"INTERNAL_ERROR","reason":"boom"}"#
-        ),
-        SyncError::Protocol(_)
-    ));
+fn a_proof_crosses_to_the_sdk_without_reformatting_the_fence() {
+    let proof = grant(90, 30).proof();
+    let sdk = proof.sdk();
+    assert_eq!(sdk.lease_id, "11111111-2222-4333-8444-555555555555");
+    assert_eq!(sdk.lease_token, "sealed-token");
+    assert_eq!(sdk.fencing_token, "7");
 }
 
 #[test]
-fn a_missing_lease_header_is_a_loss_not_a_bad_request() {
-    // The service reports a missing proof the same way it reports a lost one, so
-    // the client must not treat it as a request bug and retry.
-    assert!(matches!(
-        lease_error(
-            409,
-            br#"{"serverErrorCode":"UPLOAD_LEASE_LOST","reason":"Upload lease is absent, expired or replaced"}"#
-        ),
-        SyncError::Unsupported(_)
-    ));
+fn phases_round_trip_through_the_sdk() {
+    for phase in UploadPhase::ORDER {
+        assert_eq!(UploadPhase::from_sdk(phase.sdk()), phase);
+        assert_eq!(phase.sdk().as_str(), phase.as_str());
+    }
 }
 
 #[tokio::test]

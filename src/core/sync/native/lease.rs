@@ -24,7 +24,7 @@ use std::sync::Mutex;
 
 use crate::core::sync::{SyncError, SyncResult};
 
-use super::protocol::{map_status, NativeClient, NativeErrorBody, NativeZone};
+use super::protocol::{map_sdk_error, NativeClient, NativeZone};
 use super::receive::ZoneId;
 
 /// The error code the service returns for every flavour of lease loss:
@@ -41,14 +41,6 @@ pub const SYNC_NOT_CURRENT: &str = "SYNC_NOT_CURRENT";
 /// still assumed live after it. A tenth of the TTL is far larger than either
 /// and far smaller than the safety it buys.
 const DEADLINE_SAFETY: f64 = 0.1;
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AcquireRequest<'a> {
-    device_id: &'a str,
-    #[serde(rename = "zoneIDs")]
-    zones: Vec<ZoneId>,
-}
 
 /// The proof carried on every mutating call. Exactly one header of each kind,
 /// and the path's lease id must match the header's.
@@ -69,6 +61,14 @@ impl LeaseProof {
             ("X-Sync-Lease-Token", self.lease_token.as_str()),
             ("X-Sync-Lease-Fence", self.fencing_token.as_str()),
         ]
+    }
+
+    pub(super) fn sdk(&self) -> sync_client::LeaseProof {
+        sync_client::LeaseProof {
+            lease_id: self.lease_id.clone(),
+            lease_token: self.lease_token.clone(),
+            fencing_token: self.fencing_token.clone(),
+        }
     }
 }
 
@@ -127,24 +127,22 @@ impl UploadPhase {
             Self::Create => None,
         }
     }
-}
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CheckRequest<'a> {
-    #[serde(rename = "zoneTokens")]
-    zone_tokens: Vec<ZoneToken<'a>>,
-    #[serde(rename = "localReady")]
-    local_ready: bool,
-}
+    pub(super) fn sdk(self) -> sync_client::UploadPhase {
+        match self {
+            Self::Delete => sync_client::UploadPhase::Delete,
+            Self::Modify => sync_client::UploadPhase::Modify,
+            Self::Create => sync_client::UploadPhase::Create,
+        }
+    }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ZoneToken<'a> {
-    #[serde(rename = "zoneID")]
-    zone: &'a ZoneId,
-    #[serde(rename = "syncToken")]
-    sync_token: &'a str,
+    pub(super) fn from_sdk(phase: sync_client::UploadPhase) -> Self {
+        match phase {
+            sync_client::UploadPhase::Delete => Self::Delete,
+            sync_client::UploadPhase::Modify => Self::Modify,
+            sync_client::UploadPhase::Create => Self::Create,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -166,25 +164,6 @@ pub struct ZoneTokenValue {
     pub zone: ZoneId,
     #[serde(rename = "syncToken")]
     pub sync_token: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RenewResponse {
-    #[serde(rename = "ttlSeconds")]
-    ttl_seconds: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PhaseResponse {
-    phase: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ReleaseResponse {
-    released: bool,
 }
 
 /// Why a cycle cannot keep going. Each variant is a decision, not a symptom.
@@ -343,22 +322,22 @@ impl NativeClient {
         zone: &NativeZone,
     ) -> SyncResult<(LeaseGrant, Instant)> {
         let started = Instant::now();
-        let body = AcquireRequest {
-            device_id,
-            zones: vec![ZoneId::from(zone)],
-        };
-        let url = self.path(&["v1", "upload-leases"])?;
-        let payload = serde_json::to_vec(&body).map_err(|error| {
-            SyncError::Protocol(format!("lease request is not encodable: {error}"))
-        })?;
-        let (status, bytes) = self.lease_round_trip(&url, payload, None).await?;
-        if !status.is_success() {
-            return Err(lease_error(status.as_u16(), &bytes));
-        }
-        let grant: LeaseGrant = serde_json::from_slice(&bytes).map_err(|error| {
-            SyncError::Protocol(format!("lease grant is not decodable: {error}"))
-        })?;
-        Ok((grant, started))
+        let connection = self.connection().await?;
+        let grant = connection
+            .acquire_upload_lease(device_id, &super::receive::sdk_zone(zone))
+            .await
+            .map_err(map_sdk_error)?;
+        Ok((
+            LeaseGrant {
+                lease_id: grant.lease_id,
+                lease_token: grant.lease_token,
+                fencing_token: grant.fencing_token,
+                ttl_seconds: grant.ttl_seconds,
+                heartbeat_seconds: grant.heartbeat_seconds,
+                phase: grant.phase,
+            },
+            started,
+        ))
     }
 
     /// Prove this client's position and move the lease out of `checking`.
@@ -369,28 +348,32 @@ impl NativeClient {
         applied_token: &str,
         local_ready: bool,
     ) -> SyncResult<LeaseCheck> {
-        let zone_id = ZoneId::from(zone);
-        let body = CheckRequest {
-            zone_tokens: vec![ZoneToken {
-                zone: &zone_id,
-                sync_token: applied_token,
-            }],
-            local_ready,
-        };
-        let (status, bytes) = self
-            .lease_round_trip(
-                &self.lease_url(proof, "check")?,
-                serde_json::to_vec(&body).map_err(|error| {
-                    SyncError::Protocol(format!("lease check is not encodable: {error}"))
-                })?,
-                Some(proof),
+        let connection = self.connection().await?;
+        let check = connection
+            .check_upload_lease(
+                &proof.sdk(),
+                &super::receive::sdk_zone(zone),
+                applied_token,
+                local_ready,
             )
-            .await?;
-        if !status.is_success() {
-            return Err(lease_error(status.as_u16(), &bytes));
-        }
-        serde_json::from_slice(&bytes)
-            .map_err(|error| SyncError::Protocol(format!("lease check is not decodable: {error}")))
+            .await
+            .map_err(map_sdk_error)?;
+        Ok(LeaseCheck {
+            is_current: check.is_current,
+            may_upload: check.may_upload,
+            phase: check.phase,
+            zone_tokens: check
+                .zone_tokens
+                .into_iter()
+                .map(|token| ZoneTokenValue {
+                    zone: ZoneId {
+                        zone_name: token.zone.zone_name,
+                        owner_record_name: token.zone.owner_record_name,
+                    },
+                    sync_token: token.sync_token,
+                })
+                .collect(),
+        })
     }
 
     pub async fn set_phase(
@@ -398,110 +381,36 @@ impl NativeClient {
         proof: &LeaseProof,
         phase: UploadPhase,
     ) -> SyncResult<UploadPhase> {
-        let body = serde_json::json!({ "phase": phase.as_str() });
-        let (status, bytes) = self
-            .lease_round_trip(
-                &self.lease_url(proof, "phase")?,
-                serde_json::to_vec(&body).map_err(|error| {
-                    SyncError::Protocol(format!("lease phase is not encodable: {error}"))
-                })?,
-                Some(proof),
-            )
-            .await?;
-        if !status.is_success() {
-            return Err(lease_error(status.as_u16(), &bytes));
+        let connection = self.connection().await?;
+        let returned = connection
+            .set_upload_phase(&proof.sdk(), phase.sdk())
+            .await
+            .map_err(map_sdk_error)?;
+        if returned != phase.sdk() {
+            return Err(SyncError::Protocol(format!(
+                "the service acknowledged phase {:?} for a {:?} request",
+                UploadPhase::from_sdk(returned),
+                phase
+            )));
         }
-        let response: PhaseResponse = serde_json::from_slice(&bytes).map_err(|error| {
-            SyncError::Protocol(format!("lease phase is not decodable: {error}"))
-        })?;
-        Ok(match response.phase.as_str() {
-            "delete" => UploadPhase::Delete,
-            "modify" => UploadPhase::Modify,
-            "create" => UploadPhase::Create,
-            other => {
-                return Err(SyncError::Protocol(format!(
-                    "the service reported an unknown upload phase {other:?}"
-                )))
-            }
-        })
+        Ok(phase)
     }
 
     pub async fn renew_lease(&self, proof: &LeaseProof) -> SyncResult<(u64, Instant)> {
-        let started = Instant::now();
-        let (status, bytes) = self
-            .lease_round_trip(
-                &self.lease_url(proof, "renew")?,
-                b"{}".to_vec(),
-                Some(proof),
-            )
-            .await?;
-        if !status.is_success() {
-            return Err(lease_error(status.as_u16(), &bytes));
-        }
-        let response: RenewResponse = serde_json::from_slice(&bytes)
-            .map_err(|error| SyncError::Protocol(format!("renewal is not decodable: {error}")))?;
-        Ok((response.ttl_seconds, started))
+        let connection = self.connection().await?;
+        let renewal = connection
+            .renew_upload_lease(&proof.sdk())
+            .await
+            .map_err(map_sdk_error)?;
+        Ok((renewal.ttl_seconds, renewal.started))
     }
 
     pub async fn release_lease(&self, proof: &LeaseProof) -> SyncResult<bool> {
-        let (status, bytes) = self
-            .lease_round_trip(
-                &self.lease_url(proof, "release")?,
-                b"{}".to_vec(),
-                Some(proof),
-            )
-            .await?;
-        if !status.is_success() {
-            return Err(lease_error(status.as_u16(), &bytes));
-        }
-        let response: ReleaseResponse = serde_json::from_slice(&bytes).map_err(|error| {
-            SyncError::Protocol(format!("release response is not decodable: {error}"))
-        })?;
-        Ok(response.released)
-    }
-
-    fn lease_url(&self, proof: &LeaseProof, operation: &str) -> SyncResult<url::Url> {
-        // Appended segment-wise, never with `Url::join`: joining onto
-        // `…/upload-leases/{id}` replaces the last segment and silently drops
-        // the lease id, so every call would address the wrong path.
-        let base = self.path(&["v1", "upload-leases"])?;
-        let mut url = base;
-        {
-            let mut segments = url
-                .path_segments_mut()
-                .map_err(|_| SyncError::Protocol("lease URL cannot be extended".into()))?;
-            segments.pop_if_empty();
-            segments.push(&proof.lease_id);
-            segments.push(operation);
-        }
-        Ok(url)
-    }
-
-    async fn lease_round_trip(
-        &self,
-        url: &url::Url,
-        payload: Vec<u8>,
-        proof: Option<&LeaseProof>,
-    ) -> SyncResult<(reqwest::StatusCode, Vec<u8>)> {
-        self.send_lease_json(url, payload, proof, None).await
-    }
-}
-
-/// Map a failed lease call onto the decision it implies.
-fn lease_error(status: u16, body: &[u8]) -> SyncError {
-    let code = NativeErrorBody::parse(body)
-        .and_then(|error| error.server_error_code)
-        .unwrap_or_default();
-    match code.as_str() {
-        UPLOAD_LOCK_BUSY => SyncError::RateLimited,
-        // Every flavour of loss — expired, released, fenced, wrong generation —
-        // arrives as one code, and all of them end the cycle irreversibly.
-        UPLOAD_LEASE_LOST => SyncError::Unsupported(UPLOAD_LEASE_LOST.to_string()),
-        SYNC_NOT_CURRENT => SyncError::PreconditionFailed(format!("{SYNC_NOT_CURRENT}: {code}")),
-        UPLOAD_PHASE_MISMATCH => {
-            SyncError::PreconditionFailed(format!("{UPLOAD_PHASE_MISMATCH}: {code}"))
-        }
-        _ => map_status(status, body),
+        let connection = self.connection().await?;
+        connection
+            .release_upload_lease(&proof.sdk())
+            .await
+            .map_err(map_sdk_error)
     }
 }
 

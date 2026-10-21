@@ -30,7 +30,7 @@
 
 同一原生任务绑定一个本地根和一个服务端 zone；上传范围由客户端显式配置决定。当前产品只开放 Sync/Bidirectional；Backup、隐藏照片展示和其他缺少本地模型的能力不能仅因服务端支持而自动启用。未知或未适配内容进入可见的冲突/待办，不假装已经应用。
 
-`native/protocol.rs`、`receive.rs`、`assets.rs`、`lease.rs`、`modify.rs` 是对上述服务端契约的 Rust 适配。线上字段所属记录、摘要编码、错误和版本条件均以服务端为准。客户端方案只解释它们如何映射到本地媒体、数据库与交互，不另行列一份 wire 规范。
+`native/protocol.rs`、`receive.rs`、`assets.rs`、`lease.rs`、`modify.rs` 是对上述服务端契约的本地适配。HTTP 传输、请求编码、响应解码和线上错误分类由服务端仓库发布的 `sync-client` SDK 承担；本地适配保留端点与能力校验、SDK 错误到 `SyncError` 的映射、租约期限与阶段决策。线上字段所属记录、摘要编码、错误和版本条件均以服务端为准，SDK 变更也先在服务端仓库合入并更新 PhotoViewer 锁定的提交。客户端方案只解释它们如何映射到本地媒体、数据库与交互，不另行列一份 wire 规范。
 
 
 多账户的客户端映射、凭证生命周期和 UI 接入见[账户接入方案](native-sync-accounts.md)，此页不复制服务器登录接口定义。

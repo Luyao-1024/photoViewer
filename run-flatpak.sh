@@ -272,6 +272,12 @@ if [ -n "$CLEAN_FLAG" ]; then
     rm -rf "$TARGET_DIR"
 fi
 
+# The git dependency must be fetched with the host's credentials; the sandbox
+# only mounts CARGO_HOME, not the user's git configuration. Fetching here also
+# lets cargo reuse the checkout offline inside the sandbox.
+echo "==> fetching dependencies into $CARGO_HOME_DIR..."
+CARGO_HOME="$CARGO_HOME_DIR" CARGO_NET_GIT_FETCH_WITH_CLI=true cargo fetch --locked
+
 echo "==> cargo build ($CARGO_PROFILE) in GNOME 50 SDK sandbox..."
 flatpak run \
     --devel \

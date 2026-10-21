@@ -16,13 +16,13 @@ pub mod records;
 pub mod usage;
 
 pub use lease::{LeaseError, LeaseGrant, LeaseProof, UploadLease, UploadPhase};
-pub use modify::{ModifyOutcome, MutationBatch, OperationState};
+pub use modify::OperationState;
 pub use protocol::{
     validate_api_key, validate_capabilities, validate_zone, ForbiddenCapability,
-    NativeCapabilitiesResponse, NativeCapabilityBits, NativeClient, NativeEndpoint,
-    NativeErrorBody, NativeLimits, NativeNamespace, NativePinnedScope, NativeProbeFailure,
-    NativeRecordLimits, NativeSyncLimits, NativeZone, RequiredCapability, CHECKSUM_ALGORITHM,
-    FORBIDDEN_CAPABILITIES, REQUIRED_CAPABILITIES, SERVICE_NAME, SUPPORTED_PROTOCOL_VERSION,
+    NativeCapabilitiesResponse, NativeCapabilityBits, NativeClient, NativeEndpoint, NativeLimits,
+    NativeNamespace, NativePinnedScope, NativeProbeFailure, NativeRecordLimits, NativeSyncLimits,
+    NativeZone, RequiredCapability, CHECKSUM_ALGORITHM, FORBIDDEN_CAPABILITIES,
+    REQUIRED_CAPABILITIES, SERVICE_NAME, SUPPORTED_PROTOCOL_VERSION,
 };
 pub use provider::NativeProvider;
 pub use receive::{NativeRecord, ZoneId};

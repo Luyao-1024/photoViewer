@@ -38,6 +38,65 @@ fn a_tombstone_is_identified_without_guessing_from_its_type() {
 }
 
 #[test]
+fn the_sdk_record_maps_back_to_the_local_projection_shape() {
+    let mut fields = std::collections::BTreeMap::new();
+    fields.insert(
+        "relativePath".to_string(),
+        sync_client::Field::string("camera/one.jpg"),
+    );
+    let events = sync_client::EditEvents {
+        metadata_event: Some(sync_client::EditEvent {
+            edited_at_ms: 1_700_000_000_000,
+            source: "device".into(),
+            event_id: "event-1".into(),
+        }),
+        ..Default::default()
+    };
+    let mapped = native_record(sync_client::RemoteRecord {
+        record_name: "a1".into(),
+        record_type: Some(ASSET_RECORD_TYPE.into()),
+        zone_id: Some(sync_client::ZoneId::new("PrimarySync")),
+        record_change_tag: Some("tag-1".into()),
+        fields,
+        events,
+        deleted: false,
+    });
+    assert_eq!(mapped.record_type.as_deref(), Some(ASSET_RECORD_TYPE));
+    assert_eq!(mapped.zone_id.unwrap().owner_record_name, "_defaultOwner");
+    assert_eq!(
+        mapped.fields.unwrap()["relativePath"],
+        serde_json::json!({"type": "STRING", "value": "camera/one.jpg"})
+    );
+    let events = mapped.events.unwrap();
+    assert_eq!(events.metadata.unwrap().event_id, "event-1");
+    assert!(events.content.is_none());
+}
+
+#[test]
+fn an_sdk_tombstone_maps_without_fields() {
+    let events = sync_client::EditEvents {
+        deletion_event: Some(sync_client::EditEvent {
+            edited_at_ms: 1_700_000_000_001,
+            source: "device".into(),
+            event_id: "event-2".into(),
+        }),
+        ..Default::default()
+    };
+    let mapped = native_record(sync_client::RemoteRecord {
+        record_name: "a1".into(),
+        record_type: None,
+        zone_id: None,
+        record_change_tag: Some("tag-2".into()),
+        fields: std::collections::BTreeMap::new(),
+        events,
+        deleted: true,
+    });
+    assert!(mapped.is_tombstone());
+    assert!(mapped.fields.is_none());
+    assert_eq!(mapped.events.unwrap().deletion.unwrap().event_id, "event-2");
+}
+
+#[test]
 fn a_last_page_omits_the_continuation_marker_entirely() {
     // The key is absent, not empty. Treating a missing key as "" would make a
     // paged read loop forever on the final page.
@@ -55,14 +114,18 @@ fn a_last_page_omits_the_continuation_marker_entirely() {
 
 #[test]
 fn a_zone_entry_can_carry_an_in_band_error_inside_an_http_200() {
-    let response: ZoneChangesResponse = serde_json::from_str(
-        r#"{"zones":[{"zoneID":{"zoneName":"PrimarySync","ownerRecordName":"_defaultOwner"},"serverErrorCode":"UNKNOWN_ITEM","reason":"zone is not configured"}]}"#,
-    )
-    .unwrap();
-    let entry = &response.zones[0];
+    // The SDK surfaces the same per-zone failure, and the records array is
+    // meaningless on it: the code is read before the records are.
+    let entry = ZoneChangesEntry {
+        zone_id: None,
+        records: Vec::new(),
+        more_coming: false,
+        sync_token: None,
+        server_error_code: Some(UNKNOWN_ITEM.into()),
+        reason: Some("zone is not configured".into()),
+    };
     assert_eq!(entry.server_error_code.as_deref(), Some(UNKNOWN_ITEM));
     assert!(entry.records.is_empty());
-    // The records array is meaningless on an error entry; the code is read first.
     assert!(map_zone_error(UNKNOWN_ITEM, entry.reason.as_deref())
         .to_string()
         .contains("not configured"));
@@ -82,21 +145,6 @@ fn an_expired_token_stays_distinguishable_from_a_bad_request() {
 }
 
 #[test]
-fn the_error_envelope_is_only_read_from_an_error_shaped_object() {
-    let error = serde_json::json!({"serverErrorCode":"CONFLICT","reason":"changed"});
-    assert_eq!(
-        NativeErrorBody::from_value(&error)
-            .unwrap()
-            .server_error_code
-            .as_deref(),
-        Some("CONFLICT")
-    );
-    // A successful response that happens to have other keys is not an error.
-    assert!(NativeErrorBody::from_value(&serde_json::json!({"records":[]})).is_none());
-    assert!(NativeErrorBody::from_value(&serde_json::json!({"syncToken":"z"})).is_none());
-}
-
-#[test]
 fn zone_identity_always_names_the_owner_the_service_requires() {
     let zone = NativeZone::new("PrimarySync");
     let id = ZoneId::from(&zone);
@@ -105,76 +153,15 @@ fn zone_identity_always_names_the_owner_the_service_requires() {
     // Round-tripping must not lose the owner: the service rejects any other
     // value outright, so a dropped field is a hard 400.
     assert_eq!(id.zone(), zone);
+    // The SDK zone is built from the zone name only; the SDK supplies the
+    // owner its contract requires.
+    assert_eq!(sdk_zone(&zone), sync_client::ZoneId::new("PrimarySync"));
 }
 
 #[test]
 fn an_omitted_owner_defaults_rather_than_failing_to_parse() {
     let id: ZoneId = serde_json::from_str(r#"{"zoneName":"PrimarySync"}"#).unwrap();
     assert_eq!(id.owner_record_name, "_defaultOwner");
-}
-
-#[test]
-fn optional_request_members_are_omitted_not_sent_as_null() {
-    // The server's request DTOs are `deny_unknown_fields` and reject explicit
-    // nulls for absent optionals, so serialization must skip them.
-    let body = ZoneChangesBody {
-        zone: &ZoneId {
-            zone_name: "PrimarySync".into(),
-            owner_record_name: "_defaultOwner".into(),
-        },
-        sync_token: None,
-        results_limit: 200,
-    };
-    let encoded = serde_json::to_string(&ZoneChangesRequest {
-        zones: vec![body.clone()],
-    })
-    .unwrap();
-    assert!(!encoded.contains("syncToken"), "{encoded}");
-    assert!(encoded.contains("\"resultsLimit\":200"));
-
-    let encoded = serde_json::to_string(&ZoneChangesRequest {
-        zones: vec![ZoneChangesBody {
-            sync_token: Some("zone.abc"),
-            ..body
-        }],
-    })
-    .unwrap();
-    assert!(encoded.contains("\"syncToken\":\"zone.abc\""), "{encoded}");
-}
-
-#[test]
-fn a_query_request_carries_the_snapshot_token_and_page_marker() {
-    let zone = ZoneId {
-        zone_name: "PrimarySync".into(),
-        owner_record_name: "_defaultOwner".into(),
-    };
-    let encoded = serde_json::to_string(&QueryEnvelope {
-        zone: &zone,
-        query: QueryBody {
-            record_type: "CPLMaster",
-        },
-        results_limit: 200,
-        snapshot_token: Some("snapshot.abc"),
-        continuation_marker: Some("query.def"),
-    })
-    .unwrap();
-    assert!(
-        encoded.contains("\"recordType\":\"CPLMaster\""),
-        "{encoded}"
-    );
-    assert!(
-        encoded.contains("\"snapshotToken\":\"snapshot.abc\""),
-        "{encoded}"
-    );
-    assert!(
-        encoded.contains("\"continuationMarker\":\"query.def\""),
-        "{encoded}"
-    );
-    assert!(encoded.contains("\"zoneID\""), "{encoded}");
-    assert!(
-        encoded.contains("\"ownerRecordName\":\"_defaultOwner\""),
-        "{encoded}"
-    );
 }
 
 #[test]
@@ -187,15 +174,6 @@ fn a_receive_needs_every_required_capability_before_it_is_attempted() {
     bits.incremental_changes = true;
     bits.snapshots = false;
     assert!(!receive_is_permitted(&bits));
-}
-
-#[test]
-fn a_zone_list_request_body_is_exactly_an_empty_object() {
-    // The service accepts nothing else, including an ignored-looking key. A
-    // `()` argument would serialize as `null` and be rejected, which is why the
-    // call site sends literal bytes instead of a unit value.
-    assert_eq!(serde_json::to_string(&()).unwrap(), "null");
-    assert_eq!(String::from_utf8(b"{}".to_vec()).unwrap(), "{}");
 }
 
 #[test]

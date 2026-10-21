@@ -28,6 +28,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
 anyhow = "1"
+sync-client = { git = "https://github.com/Luyao-1024/syncserver.git", rev = "9097be58dbec0cc441ebb46068dc81f72d537368" }
 tracing = { version = "0.1", features = ["attributes"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 flate2 = "1"

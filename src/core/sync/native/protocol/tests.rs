@@ -367,52 +367,58 @@ fn a_client_refuses_a_malformed_key_before_opening_a_connection() {
 }
 
 #[test]
-fn the_cloudkit_base_is_built_from_the_pinned_namespace() {
-    let namespace = capabilities().namespace;
-    let client = NativeClient::new(&endpoint(), &"a".repeat(32)).unwrap();
-    assert_eq!(
-        client.cloudkit_base(&namespace).unwrap().as_str(),
-        "https://sync.example.invalid/database/1/com.apple.photos.cloud/production/private"
+fn a_conflict_keeps_the_detail_the_coordinator_classifies() {
+    // The coordinator decides "reconcile and retry" from the rendered detail,
+    // so the SDK's structured failure must still reach it in this exact shape.
+    let conflict = map_sdk_error(sync_client::Error::Api {
+        status: 409,
+        failure: Box::new(sync_client::ServerFailure {
+            code: "CONFLICT".into(),
+            reason: "record changed".into(),
+            record_name: None,
+            zone: None,
+            server_record: None,
+        }),
+    });
+    assert!(matches!(conflict, SyncError::PreconditionFailed(_)));
+    assert!(
+        conflict
+            .to_string()
+            .contains("HTTP 409 CONFLICT: record changed"),
+        "{conflict}"
     );
 }
 
 #[test]
-fn a_container_with_path_syntax_stays_inside_its_segment() {
-    let mut namespace = capabilities().namespace;
-    namespace.container = "com.example/../escape".into();
-    let client = NativeClient::new(&endpoint(), &"a".repeat(32)).unwrap();
-    let base = client.cloudkit_base(&namespace).unwrap();
-    assert_eq!(
-        base.as_str(),
-        "https://sync.example.invalid/database/1/com.example%2F..%2Fescape/production/private"
-    );
-}
-
-#[test]
-fn the_error_envelope_is_read_the_same_way_at_both_levels() {
-    // A transport failure and an in-band batch failure share one shape; the
-    // client must not need a separate parser for the HTTP 200 case.
-    let body = br#"{"serverErrorCode":"CONFLICT","reason":"record changed"}"#;
-    let parsed = NativeErrorBody::parse(body).unwrap();
-    assert_eq!(parsed.server_error_code.as_deref(), Some("CONFLICT"));
-    assert_eq!(parsed.reason.as_deref(), Some("record changed"));
-    assert_eq!(
-        describe(409, body),
-        "HTTP 409 CONFLICT: record changed".to_string()
-    );
-
-    // A body with neither key is still described, not silently dropped.
-    assert_eq!(describe(500, b"<html>"), "HTTP 500".to_string());
-    assert!(NativeErrorBody::parse(b"<html>").is_none());
-}
-
-#[test]
-fn status_codes_map_onto_the_shared_provider_errors() {
-    assert!(matches!(map_status(401, b""), SyncError::Authentication));
-    assert!(matches!(map_status(403, b""), SyncError::Authentication));
-    assert!(matches!(map_status(404, b""), SyncError::NotFound(_)));
-    assert!(matches!(map_status(503, b""), SyncError::RateLimited));
-    assert!(matches!(map_status(400, b""), SyncError::Protocol(_)));
+fn the_sdk_error_model_maps_onto_the_shared_provider_errors() {
+    assert!(matches!(
+        map_sdk_error(sync_client::Error::Authentication("expired".into())),
+        SyncError::Authentication
+    ));
+    assert!(matches!(
+        map_sdk_error(sync_client::Error::NotFound("gone".into())),
+        SyncError::NotFound(_)
+    ));
+    assert!(matches!(
+        map_sdk_error(sync_client::Error::LeaseBusy),
+        SyncError::RateLimited
+    ));
+    assert!(matches!(
+        map_sdk_error(sync_client::Error::Protocol("bad".into())),
+        SyncError::Protocol(_)
+    ));
+    assert!(matches!(
+        map_sdk_error(sync_client::Error::Transport("offline".into())),
+        SyncError::Offline(_)
+    ));
+    // A lease loss is not a protocol error: the cycle must end.
+    assert!(matches!(
+        map_sdk_error(sync_client::Error::LeaseLost),
+        SyncError::Unsupported(_)
+    ));
+    assert!(map_sdk_error(sync_client::Error::ExpiredSyncToken)
+        .to_string()
+        .contains("EXPIRED_SYNC_TOKEN"));
 }
 
 #[test]

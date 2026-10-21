@@ -6,11 +6,15 @@
 
 客户端知识资产包括：服务端数据到本地媒体的映射、数据库事务、上传范围、任务调度、dirty 与确认基线、已发出操作恢复、成对资源发布、缓存复用和交互。发现 wire 不一致时，修正适配实现；协议变更在服务端仓库提出，不能在此处另写一套规范。
 
+HTTP 传输、请求序列化、响应解码和线上错误分类由服务端仓库的客户端 SDK 提供。`Cargo.toml` 以 GitHub 依赖锁定 `sync-client` 的提交；本地 `native/` 只保留端点/能力校验、SDK 错误到 `SyncError` 的映射、照片领域映射以及租约和发布决策。SDK 需要变更时，先在 SyncServer 仓库合入并推送，再更新这里的锁定提交；不能以本地路径依赖作为发布形态。
+
 ## 当前实现与验证边界
 
 自动续批使用纯上行模式：一次同步触发只在首个批次执行下行/发布协调；无失败批次通过原子响应登记 record 身份、版本和资源基线后，直接采用服务端当前水位，后续批次不再重复下行投影。
 
 C1.1–C1.4 已有连接、接收、上行和资源实现。2026-10-15 静态检视发现的九项偏差已在本地修订并通过相关聚焦测试，详见[修订说明](native-sync-integration.md)。当前不将编译通过称为完整运行验收。
+
+构建前提：`sync-client` 是 GitHub 依赖。仓库未公开时，本地需要可用的 git 凭据（libgit2 取不到时设置 `CARGO_NET_GIT_FETCH_WITH_CLI=true`），CI 和 Flatpak 打包需要公开仓库或注入只读凭据。`cargo-sources.json` 已按锁定的提交重新生成；直接运行 `run-flatpak.sh` 仍通过宿主 Cargo 缓存取依赖，离线打包则使用已生成的 git source。
 
 原 WebDAV 引擎已移除。当前仍为未发布的开发阶段，数据库版本始终为 **1**，表结构以 `schema.sql` 为准，不维护开发版本之间的迁移兼容。
 
@@ -20,7 +24,7 @@ C1.5 已接入设置、自动调度、相册选择及逐照片发布；一次触
 
 | 实现位置 | 客户端职责 |
 |---|---|
-| `sync/native/protocol.rs` | 连接策略、能力探测、同源认证传输和服务端 DTO 适配 |
+| `sync/native/protocol.rs` | 端点与能力校验、SDK 连接适配、同源认证策略和错误分类 |
 | `sync/native/records.rs` | 校验单张照片的元数据与原图／缩略图引用 |
 | `sync/service/receive.rs`、`sync/service/receive/collisions.rs`、`sync/store/receive.rs` | 共享快照、单张未完成字段、元数据直接入库、ingest/applied 的本地事务 |
 | `sync/service/coordinator.rs` | 单轮接收、取锁、保活、一次水位检查、分类上行与结果恢复 |

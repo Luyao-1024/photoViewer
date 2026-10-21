@@ -1,14 +1,18 @@
-//! Typed wire boundary for the native SyncServer service.
+//! Typed boundary between the local sync engine and the native SyncServer SDK.
 //!
-//! Everything here is transport and DTOs: no SQL, no GTK. The field names are
+//! Everything here is connection policy and DTOs: no SQL, no GTK. The wire
+//! transport, request encoding and response decoding belong to the `sync-client`
+//! SDK; this module owns endpoint/capability validation, the SDK error
+//! translation and the pinned-scope hand-off. The capability field names are
 //! transcribed from the service's own `GET /v1/capabilities` payload
 //! (`syncserver@2d9f9a7`, stage M4, protocolVersion 1) and are deliberately
 //! tolerant of unknown future members so a newer server cannot fail to parse.
 //!
 //! See `docs/modules/native-sync-protocol.md` for the contract these types
-//! implement. Later milestones add delta/lease/asset calls here.
+//! implement.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -144,22 +148,6 @@ impl NativeEndpoint {
             self.base.host_str().unwrap_or_default().to_string(),
             self.base.port(),
         )
-    }
-
-    fn join(&self, segments: &[&str]) -> SyncResult<Url> {
-        let mut url = self.base.clone();
-        {
-            let mut path = url
-                .path_segments_mut()
-                .map_err(|_| NativeProbeFailure::Endpoint {
-                    reason: "endpoint cannot be extended with path segments".into(),
-                })?;
-            path.pop_if_empty();
-            for segment in segments {
-                path.push(segment);
-            }
-        }
-        Ok(url)
     }
 }
 
@@ -504,74 +492,100 @@ pub fn validate_api_key(api_key: &str) -> Result<(), NativeProbeFailure> {
     Ok(())
 }
 
-/// The error envelope the service uses at both transport and batch level: a
-/// non-2xx body and an in-band `serverErrorCode` inside an HTTP 200 carry the
-/// same two keys, so one parser covers both.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NativeErrorBody {
-    #[serde(default)]
-    pub server_error_code: Option<String>,
-    #[serde(default)]
-    pub reason: Option<String>,
-}
-
-impl NativeErrorBody {
-    pub fn parse(body: &[u8]) -> Option<Self> {
-        serde_json::from_slice(body).ok()
+/// Translate the SDK's error model into the decisions this client makes. The
+/// variants are coarse on purpose; the rendered detail still carries the
+/// service's `serverErrorCode` where a caller classifies it later.
+pub(super) fn map_sdk_error(error: sync_client::Error) -> SyncError {
+    use sync_client::Error as SdkError;
+    match error {
+        SdkError::Endpoint(detail) => {
+            SyncError::Protocol(format!("native endpoint is invalid: {detail}"))
+        }
+        SdkError::Transport(detail) => SyncError::Offline(detail),
+        SdkError::Protocol(detail) => SyncError::Protocol(detail),
+        SdkError::Authentication(_) => SyncError::Authentication,
+        SdkError::Api { status, failure } => map_failure(status, &failure),
+        SdkError::InBand(failure) => SyncError::Protocol(failure.detail()),
+        SdkError::LeaseLost => SyncError::Unsupported("UPLOAD_LEASE_LOST".into()),
+        SdkError::LeaseBusy => SyncError::RateLimited,
+        SdkError::PhaseMismatch(detail) => {
+            SyncError::PreconditionFailed(format!("UPLOAD_PHASE_MISMATCH: {detail}"))
+        }
+        SdkError::NotCurrent(detail) => {
+            SyncError::PreconditionFailed(format!("SYNC_NOT_CURRENT: {detail}"))
+        }
+        SdkError::ExpiredSyncToken => SyncError::Unsupported("EXPIRED_SYNC_TOKEN".into()),
+        SdkError::NotFound(detail) => SyncError::NotFound(detail),
+        SdkError::IdempotencyConflict => {
+            SyncError::PreconditionFailed("IDEMPOTENCY_CONFLICT".into())
+        }
+        SdkError::QuotaExceeded => SyncError::Protocol("STORAGE_QUOTA_EXCEEDED".into()),
+        SdkError::ChecksumMismatch { expected, actual } => SyncError::Protocol(format!(
+            "CHECKSUM_MISMATCH: expected {expected}, computed {actual}"
+        )),
+        SdkError::SizeMismatch { expected, actual } => SyncError::Protocol(format!(
+            "UPLOAD_SIZE_MISMATCH: expected {expected} bytes, received {actual}"
+        )),
+        SdkError::UploadRejected { code, reason } => {
+            SyncError::Protocol(format!("{code}: {reason}"))
+        }
+        SdkError::UploadFailed(detail) => SyncError::Protocol(detail),
+        SdkError::Io(error) => SyncError::Io(error),
+        SdkError::Graph(error) => SyncError::Protocol(error.to_string()),
     }
 }
 
-fn describe(status: u16, body: &[u8]) -> String {
-    match NativeErrorBody::parse(body) {
-        Some(error) => match (error.server_error_code, error.reason) {
-            (Some(code), Some(reason)) => format!("HTTP {status} {code}: {reason}"),
-            (Some(code), None) => format!("HTTP {status} {code}"),
-            (None, Some(reason)) => format!("HTTP {status}: {reason}"),
-            (None, None) => format!("HTTP {status}"),
+fn map_failure(status: u16, failure: &sync_client::ServerFailure) -> SyncError {
+    let code = failure.code.as_str();
+    let reason = if failure.reason.is_empty() {
+        code
+    } else {
+        failure.reason.as_str()
+    };
+    let detail = failure.detail();
+    match code {
+        // Every loss flavour ends the cycle irreversibly.
+        "UPLOAD_LEASE_LOST" => SyncError::Unsupported("UPLOAD_LEASE_LOST".into()),
+        "UPLOAD_LOCK_BUSY" => SyncError::RateLimited,
+        "SYNC_NOT_CURRENT" => SyncError::PreconditionFailed(format!("SYNC_NOT_CURRENT: {detail}")),
+        "UPLOAD_PHASE_MISMATCH" => {
+            SyncError::PreconditionFailed(format!("UPLOAD_PHASE_MISMATCH: {detail}"))
+        }
+        "EXPIRED_SYNC_TOKEN" => SyncError::Unsupported(detail),
+        "UNKNOWN_ITEM" => SyncError::NotFound(detail),
+        _ => match status {
+            401 | 403 => SyncError::Authentication,
+            404 => SyncError::NotFound(detail),
+            409 | 412 => SyncError::PreconditionFailed(format!("HTTP {status} {code}: {reason}")),
+            413 => SyncError::Unsupported(format!("HTTP {status} {code}: {reason}")),
+            429 | 503 => SyncError::RateLimited,
+            _ => SyncError::Protocol(format!("HTTP {status} {code}: {reason}")),
         },
-        None => format!("HTTP {status}"),
     }
 }
-
-pub(super) fn map_status(status: u16, body: &[u8]) -> SyncError {
-    let detail = describe(status, body);
-    match status {
-        401 | 403 => SyncError::Authentication,
-        404 => SyncError::NotFound(detail),
-        409 | 412 => SyncError::PreconditionFailed(detail),
-        413 => SyncError::Unsupported(detail),
-        429 | 503 => SyncError::RateLimited,
-        _ => SyncError::Protocol(detail),
-    }
-}
-
-/// Maximum accepted `/v1/capabilities` body. The payload is a few kilobytes;
-/// the cap stops a hostile endpoint from streaming an unbounded document.
-const MAX_CAPABILITIES_BYTES: u64 = 256 * 1024;
 
 #[derive(Clone)]
 pub struct NativeClient {
-    pub(super) client: reqwest::Client,
+    client: sync_client::Client,
     base: NativeEndpoint,
-    api_key: String,
+    /// The scope a successful probe pinned. Methods that need a namespace use
+    /// it; a client that has not probed yet probes lazily on first use.
+    pinned: Arc<RwLock<Option<NativePinnedScope>>>,
 }
 
 impl NativeClient {
     pub fn new(endpoint: &NativeEndpoint, api_key: &str) -> SyncResult<Self> {
         validate_api_key(api_key)?;
-        let client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(15))
-            .timeout(std::time::Duration::from_secs(60))
-            // A cross-origin redirect would carry the Bearer key to a host the
-            // user never configured, so redirects are never followed.
-            .redirect(reqwest::redirect::Policy::none())
+        let client = sync_client::Client::builder(endpoint.base.as_str())
+            .map_err(map_sdk_error)?
+            .access_token(api_key)
             .user_agent(concat!("PhotoViewer/", env!("CARGO_PKG_VERSION")))
-            .build()?;
+            .build()
+            .map_err(map_sdk_error)?;
         Ok(Self {
             client,
             base: endpoint.clone(),
-            api_key: api_key.to_string(),
+            pinned: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -579,247 +593,85 @@ impl NativeClient {
         &self.base
     }
 
-    pub async fn logout(&self) -> SyncResult<()> {
-        let url = self
-            .base
-            .base()
-            .join("v1/auth/logout")
-            .map_err(|_| SyncError::Protocol("invalid logout endpoint".into()))?;
-        let (status, bytes) = self
-            .send_lease_json(&url, b"{}".to_vec(), None, None)
-            .await?;
-        if status == reqwest::StatusCode::NO_CONTENT || status == reqwest::StatusCode::UNAUTHORIZED
-        {
-            Ok(())
-        } else {
-            Err(map_status(status.as_u16(), &bytes))
+    /// Exchange credentials for a session. The SDK owns the request; this
+    /// client keeps its identity/expiry checks so a malformed answer never
+    /// becomes a stored credential.
+    pub async fn login(
+        endpoint: &NativeEndpoint,
+        username: &str,
+        password: &str,
+    ) -> SyncResult<super::auth::NativeSession> {
+        if username.len() > 64 || password.len() > 1024 {
+            return Err(SyncError::Authentication);
         }
-    }
-
-    /// Absolute URL for a path under the configured origin.
-    pub(super) fn path(&self, segments: &[&str]) -> SyncResult<Url> {
-        self.base.join(segments)
-    }
-
-    /// The single JSON POST path. Auth, the shared error envelope, the response
-    /// size ceiling and the in-band-error check all live here so every control
-    /// and metadata call is treated identically.
-    pub(super) async fn post_json<B: serde::Serialize, R: serde::de::DeserializeOwned>(
-        &self,
-        url: &Url,
-        body: &B,
-    ) -> SyncResult<R> {
-        super::receive::post_json(self, url, body).await
-    }
-
-    /// POST a body that must be exactly the given bytes, for the one endpoint
-    /// whose request shape is an empty object rather than a DTO.
-    pub(super) async fn post_json_raw<R: serde::de::DeserializeOwned>(
-        &self,
-        url: &Url,
-        body: &[u8],
-    ) -> SyncResult<R> {
-        super::receive::post_json_raw(self, url, body).await
-    }
-
-    fn request(&self, url: Url) -> reqwest::RequestBuilder {
-        self.client.get(url).bearer_auth(&self.api_key)
-    }
-
-    /// Authenticated JSON POST carrying a lease proof.
-    ///
-    /// A lease-bearing call and an ordinary one share everything except the
-    /// three proof headers, so both go through the same request builder rather
-    /// than two that could drift.
-    pub(super) async fn send_lease_json(
-        &self,
-        url: &Url,
-        payload: Vec<u8>,
-        proof: Option<&super::lease::LeaseProof>,
-        idempotency_key: Option<&str>,
-    ) -> SyncResult<(reqwest::StatusCode, Vec<u8>)> {
-        let mut request = self
-            .client
-            .post(url.clone())
-            .bearer_auth(&self.api_key)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .body(payload);
-        if let Some(proof) = proof {
-            for (name, value) in super::lease::lease_headers(proof) {
-                request = request.header(name, value);
-            }
-        }
-        if let Some(key) = idempotency_key {
-            request = request.header("Idempotency-Key", key);
-        }
-        let response = request.send().await?;
-        let status = response.status();
-        Ok((status, response.bytes().await?.to_vec()))
-    }
-
-    /// Authenticated JSON POST carrying a lease proof and an optional
-    /// idempotency key, returning the raw status and body.
-    ///
-    /// The caller decides what a status means: a lease call maps its failures
-    /// onto arbitration decisions, while a record mutation has to read an
-    /// in-band error inside a 200. Both go through the same request so the
-    /// proof headers cannot drift apart.
-    pub async fn send_with_proof(
-        &self,
-        url: &Url,
-        payload: Vec<u8>,
-        proof: &super::lease::LeaseProof,
-        idempotency_key: Option<&str>,
-    ) -> SyncResult<(reqwest::StatusCode, Vec<u8>)> {
-        self.send_lease_json(url, payload, Some(proof), idempotency_key)
+        let client = sync_client::Client::builder(endpoint.base.as_str())
+            .map_err(map_sdk_error)?
+            .user_agent(concat!("PhotoViewer/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .map_err(map_sdk_error)?;
+        let session = client
+            .login(username, password)
             .await
-    }
-
-    /// Authenticated GET. Reconciling an uncertain outcome has to work after
-    /// the lease that issued it is gone, so this carries no lease proof.
-    pub(super) async fn authorized_get(&self, url: &Url) -> SyncResult<reqwest::Response> {
-        Ok(self.request(url.clone()).send().await?)
-    }
-
-    /// A GET authorized by the capability in the URL's query string, with **no**
-    /// `Authorization` header.
-    ///
-    /// Session authentication and a resource capability are both required in
-    /// account mode. Authenticate only after the origin is checked.
-    pub(super) fn check_origin(&self, url: &Url) -> SyncResult<()> {
-        let base = self.base.base();
-        if url.scheme() != base.scheme()
-            || url.host_str() != base.host_str()
-            || url.port_or_known_default() != base.port_or_known_default()
-            || !url.username().is_empty()
-            || url.password().is_some()
+            .map_err(map_sdk_error)?;
+        validate_api_key(&session.access_token)?;
+        if session.token_type != "Bearer"
+            || uuid::Uuid::parse_str(&session.user.id).is_err()
+            || !session.user.username.eq_ignore_ascii_case(username)
+            || session.user.username.is_empty()
+            || session.user.username.len() > 64
+            || session.expires_at <= chrono::Utc::now().timestamp()
         {
             return Err(SyncError::Protocol(
-                "cross-origin resource capability refused".into(),
+                "invalid session identity or expiry".into(),
             ));
         }
-        Ok(())
-    }
-    pub(super) async fn capability_get(&self, url: &Url) -> SyncResult<reqwest::Response> {
-        self.check_origin(url)?;
-        Ok(self
-            .client
-            .get(url.clone())
-            .bearer_auth(&self.api_key)
-            .timeout(std::time::Duration::from_secs(3600))
-            .send()
-            .await?)
+        Ok(super::auth::NativeSession {
+            access_token: session.access_token,
+            token_type: session.token_type,
+            expires_at: session.expires_at,
+            user: super::auth::NativeUser {
+                id: session.user.id,
+                username: session.user.username,
+            },
+        })
     }
 
-    /// Raw `application/octet-stream` upload to a capability URL under a held
-    /// lease: same-account authentication, capability authority and lease proof.
-    pub(super) async fn upload_bytes_request(
-        &self,
-        url: &str,
-        proof: &super::lease::LeaseProof,
-        bytes: &[u8],
-    ) -> SyncResult<(reqwest::StatusCode, Vec<u8>)> {
-        let parsed = url::Url::parse(url)
-            .map_err(|error| SyncError::Protocol(format!("upload URL is unusable: {error}")))?;
-        self.check_origin(&parsed)?;
-        let mut request = self
-            .client
-            .post(parsed)
-            .bearer_auth(&self.api_key)
-            .timeout(std::time::Duration::from_secs(3600))
-            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
-            .body(bytes.to_vec());
-        for (name, value) in super::lease::lease_headers(proof) {
-            request = request.header(name, value);
-        }
-        let response = request.send().await?;
-        let status = response.status();
-        Ok((status, response.bytes().await?.to_vec()))
+    pub async fn logout(&self) -> SyncResult<()> {
+        self.client.logout().await.map_err(map_sdk_error)
     }
 
-    pub(super) async fn upload_stream(
-        &self,
-        url: &Url,
-        proof: &super::lease::LeaseProof,
-        body: reqwest::Body,
-        size: u64,
-    ) -> SyncResult<serde_json::Value> {
-        self.check_origin(url)?;
-        let mut request = self
-            .client
-            .post(url.clone())
-            .bearer_auth(&self.api_key)
-            .timeout(std::time::Duration::from_secs(3600))
-            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
-            .header(reqwest::header::CONTENT_LENGTH, size)
-            .body(body);
-        for (name, value) in super::lease::lease_headers(proof) {
-            request = request.header(name, value);
+    fn store_scope(&self, scope: &NativePinnedScope) {
+        if let Ok(mut slot) = self.pinned.write() {
+            *slot = Some(scope.clone());
         }
-        let response = request.send().await?;
-        let status = response.status();
-        let bytes = response.bytes().await?;
-        if !status.is_success() {
-            return Err(map_status(status.as_u16(), &bytes));
-        }
-        serde_json::from_slice(&bytes)
-            .map_err(|_| SyncError::Protocol("invalid upload response".into()))
     }
 
-    /// Authenticated JSON POST. This is the only path that attaches the Bearer
-    /// key to a body-bearing request, so there is one place to audit.
-    pub(super) async fn send_json(
-        &self,
-        url: &Url,
-        payload: Vec<u8>,
-    ) -> Result<reqwest::Response, crate::core::sync::SyncError> {
-        Ok(self
-            .client
-            .post(url.clone())
-            .bearer_auth(&self.api_key)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .body(payload)
-            .send()
-            .await?)
+    fn cached_scope(&self) -> Option<NativePinnedScope> {
+        self.pinned.read().ok().and_then(|scope| scope.clone())
+    }
+
+    /// A connection pinned to the last successful probe. A client used before
+    /// an explicit probe performs one here, so every call has a namespace.
+    pub(super) async fn connection(&self) -> SyncResult<sync_client::Connection> {
+        let scope = match self.cached_scope() {
+            Some(scope) => scope,
+            None => self.probe().await?,
+        };
+        self.client
+            .connect_with_scope(scope.sdk_scope())
+            .await
+            .map_err(map_sdk_error)
     }
 
     /// `GET /readyz`, unauthenticated. Confirms the process is serving before
     /// an authenticated call is blamed for the failure.
     pub async fn ready(&self) -> SyncResult<()> {
-        let url = self.base.join(&["readyz"])?;
-        let response = self.client.get(url).send().await?;
-        let status = response.status();
-        let body = response.bytes().await?;
-        if !status.is_success() {
-            return Err(map_status(status.as_u16(), &body));
-        }
-        let ready: serde_json::Value = serde_json::from_slice(&body).map_err(|error| {
-            SyncError::Protocol(format!("readiness response is not JSON: {error}"))
-        })?;
-        if ready.get("status").and_then(|value| value.as_str()) != Some("ready") {
-            return Err(SyncError::Offline(
-                "endpoint is reachable but not ready to serve".into(),
-            ));
-        }
-        Ok(())
+        self.client.ready().await.map_err(map_sdk_error)
     }
 
     pub async fn capabilities(&self) -> SyncResult<NativeCapabilitiesResponse> {
-        let url = self.base.join(&["v1", "capabilities"])?;
-        let response = self.request(url).send().await?;
-        let status = response.status();
-        let body = response.bytes().await?;
-        if !status.is_success() {
-            return Err(map_status(status.as_u16(), &body));
-        }
-        if body.len() as u64 > MAX_CAPABILITIES_BYTES {
-            return Err(SyncError::Protocol(
-                "capabilities response exceeds the accepted size".into(),
-            ));
-        }
-        serde_json::from_slice(&body).map_err(|error| {
-            SyncError::Protocol(format!("capabilities are not decodable: {error}"))
-        })
+        let capabilities = self.client.capabilities().await.map_err(map_sdk_error)?;
+        Ok(native_capabilities(capabilities))
     }
 
     /// Fetch the account's storage usage unless a recent reading is still good,
@@ -834,18 +686,14 @@ impl NativeClient {
         if let Some(usage) = super::usage::cached() {
             return Ok(usage);
         }
-        let url = self.base.join(&["v1", "storage"])?;
-        let response = self.request(url).send().await?;
-        let status = response.status();
-        let body = response.bytes().await?;
-        if !status.is_success() {
-            return Err(map_status(status.as_u16(), &body));
-        }
-        let usage: super::usage::StorageUsage = serde_json::from_slice(&body).map_err(|error| {
-            SyncError::Protocol(format!("storage usage is not decodable: {error}"))
-        })?;
-        super::usage::record(usage);
-        Ok(usage)
+        let connection = self.connection().await?;
+        let usage = connection.storage_usage().await.map_err(map_sdk_error)?;
+        let reading = super::usage::StorageUsage {
+            quota_bytes: usage.quota_bytes,
+            used_bytes: usage.used_bytes,
+        };
+        super::usage::record(reading);
+        Ok(reading)
     }
 
     /// Health, then capabilities, then validation. Nothing is persisted here, so
@@ -853,29 +701,169 @@ impl NativeClient {
     pub async fn probe(&self) -> SyncResult<NativePinnedScope> {
         self.ready().await?;
         let capabilities = self.capabilities().await?;
-        Ok(validate_capabilities(&self.base, &capabilities)?)
+        let scope = validate_capabilities(&self.base, &capabilities)?;
+        self.store_scope(&scope);
+        Ok(scope)
     }
+}
 
-    /// The CloudKit-shaped base every metadata call hangs off.
-    ///
-    /// The container is taken from the pinned namespace rather than hardcoded,
-    /// and `path_segments_mut` percent-encodes each segment — so a container
-    /// containing `/` or `..` stays inside its own segment instead of walking
-    /// the URL.
-    pub fn cloudkit_base(&self, namespace: &NativeNamespace) -> SyncResult<Url> {
-        if namespace.container.is_empty()
-            || namespace.environment.is_empty()
-            || namespace.database.is_empty()
-        {
-            return Err(SyncError::Protocol("pinned namespace is incomplete".into()));
+impl NativePinnedScope {
+    /// The SDK's view of the same pinned contract. The SDK re-checks the
+    /// origin, protocol version, capabilities and namespace in
+    /// `connect_with_scope`, so a scope read back from the database is never
+    /// trusted merely because it parsed.
+    pub(super) fn sdk_scope(&self) -> sync_client::PinnedScope {
+        sync_client::PinnedScope {
+            authentication: self.authentication.as_ref().map(|authentication| {
+                sync_client::Authentication {
+                    mode: authentication.mode.clone(),
+                    user: authentication.user.as_ref().map(|user| {
+                        sync_client::SessionUser {
+                            id: user.id.clone(),
+                            username: user.username.clone(),
+                            // This client keeps no role model; the field is only
+                            // carried for display and is not part of identity.
+                            role: String::new(),
+                        }
+                    }),
+                    resource_bearer_required: authentication.resource_bearer_required,
+                    session_ttl_seconds: 0,
+                }
+            }),
+            public_base_url: self.public_base_url.clone(),
+            namespace: sync_client::Namespace {
+                tenant: self.namespace.tenant.clone(),
+                container: self.namespace.container.clone(),
+                environment: self.namespace.environment.clone(),
+                database: self.namespace.database.clone(),
+            },
+            database_generation: self.database_generation.clone(),
+            protocol_version: self.protocol_version,
+            service_version: self.service_version.clone(),
+            stage: self.stage.clone(),
+            checksum_algorithm: self.checksum_algorithm.clone(),
+            zones: self.zones.clone(),
+            capabilities: sync_client::CapabilityBits {
+                zone_listing: self.capabilities.zone_listing,
+                record_crud: self.capabilities.record_crud,
+                snapshots: self.capabilities.snapshots,
+                incremental_changes: self.capabilities.incremental_changes,
+                upload_leases: self.capabilities.upload_leases,
+                fencing: self.capabilities.fencing,
+                token_current_gate: self.capabilities.token_current_gate,
+                upload_phases: self.capabilities.upload_phases,
+                operation_status_read: self.capabilities.operation_status_read,
+                asset_upload: self.capabilities.asset_upload,
+                asset_download: self.capabilities.asset_download,
+                photo_publication: self.capabilities.photo_publication,
+                storage_quota: false,
+                storage_usage_by_media_type: false,
+                query_batch: self.capabilities.query_batch,
+                change_aliases: self.capabilities.change_aliases,
+                upload_resume: self.capabilities.upload_resume,
+                sharing: self.capabilities.sharing,
+                apple_authentication: self.capabilities.apple_authentication,
+            },
+            limits: sync_client::Limits {
+                max_asset_bytes: self.limits.max_asset_bytes,
+                user_storage_quota_bytes: 0,
+                thumbnail_max_bytes: self.limits.thumbnail_max_bytes,
+                upload_concurrency: self.limits.upload_concurrency,
+                download_concurrency: self.limits.download_concurrency,
+                upload_idle_timeout_secs: self.limits.upload_idle_timeout_secs,
+                upload_total_timeout_secs: self.limits.upload_total_timeout_secs,
+                db_queue_capacity: self.limits.db_queue_capacity,
+                json_body_limit: self.limits.json_body_limit,
+                lease_ttl_secs: self.limits.lease_ttl_secs,
+                lease_heartbeat_secs: self.limits.lease_heartbeat_secs,
+                control_queue_capacity: self.limits.control_queue_capacity,
+            },
+            sync_limits: sync_client::SyncLimits {
+                max_page: self.sync_limits.max_page,
+                max_zones: self.sync_limits.max_zones,
+            },
+            record_limits: sync_client::RecordLimits {
+                max_operations: self.record_limits.max_operations,
+                max_record_bytes: self.record_limits.max_record_bytes,
+                max_result_bytes: self.record_limits.max_result_bytes,
+            },
         }
-        self.base.join(&[
-            "database",
-            "1",
-            &namespace.container,
-            &namespace.environment,
-            &namespace.database,
-        ])
+    }
+}
+
+/// Convert the SDK's decoded capability document into the client-owned shape
+/// that is validated and persisted. This is a field-for-field map, not a second
+/// protocol: the SDK parsed the wire; the local rules still decide acceptance.
+fn native_capabilities(capabilities: sync_client::Capabilities) -> NativeCapabilitiesResponse {
+    NativeCapabilitiesResponse {
+        authentication: capabilities.authentication.map(|authentication| {
+            super::auth::NativeAuthentication {
+                mode: authentication.mode,
+                user: authentication.user.map(|user| super::auth::NativeUser {
+                    id: user.id,
+                    username: user.username,
+                }),
+                resource_bearer_required: authentication.resource_bearer_required,
+            }
+        }),
+        service: capabilities.service,
+        version: capabilities.version,
+        stage: capabilities.stage,
+        namespace: NativeNamespace {
+            tenant: capabilities.namespace.tenant,
+            container: capabilities.namespace.container,
+            environment: capabilities.namespace.environment,
+            database: capabilities.namespace.database,
+        },
+        zones: capabilities.zones,
+        public_base_url: capabilities.public_base_url,
+        database_generation: capabilities.database_generation,
+        schema_version: capabilities.schema_version,
+        capabilities: NativeCapabilityBits {
+            zone_listing: capabilities.capabilities.zone_listing,
+            record_crud: capabilities.capabilities.record_crud,
+            snapshots: capabilities.capabilities.snapshots,
+            incremental_changes: capabilities.capabilities.incremental_changes,
+            upload_leases: capabilities.capabilities.upload_leases,
+            fencing: capabilities.capabilities.fencing,
+            token_current_gate: capabilities.capabilities.token_current_gate,
+            upload_phases: capabilities.capabilities.upload_phases,
+            operation_status_read: capabilities.capabilities.operation_status_read,
+            asset_upload: capabilities.capabilities.asset_upload,
+            asset_download: capabilities.capabilities.asset_download,
+            photo_publication: capabilities.capabilities.photo_publication,
+            query_batch: capabilities.capabilities.query_batch,
+            change_aliases: capabilities.capabilities.change_aliases,
+            apple_authentication: capabilities.capabilities.apple_authentication,
+            sharing: capabilities.capabilities.sharing,
+            upload_resume: capabilities.capabilities.upload_resume,
+        },
+        limits: NativeLimits {
+            max_asset_bytes: capabilities.limits.max_asset_bytes,
+            thumbnail_max_bytes: capabilities.limits.thumbnail_max_bytes,
+            upload_concurrency: capabilities.limits.upload_concurrency,
+            download_concurrency: capabilities.limits.download_concurrency,
+            upload_idle_timeout_secs: capabilities.limits.upload_idle_timeout_secs,
+            upload_total_timeout_secs: capabilities.limits.upload_total_timeout_secs,
+            db_queue_capacity: capabilities.limits.db_queue_capacity,
+            json_body_limit: capabilities.limits.json_body_limit,
+            lease_ttl_secs: capabilities.limits.lease_ttl_secs,
+            lease_heartbeat_secs: capabilities.limits.lease_heartbeat_secs,
+            control_queue_capacity: capabilities.limits.control_queue_capacity,
+        },
+        protocol_version: capabilities.protocol_version,
+        checksum_algorithm: capabilities.checksum_algorithm,
+        history_retention: capabilities.history_retention,
+        record_field_types: capabilities.record_field_types,
+        sync_limits: NativeSyncLimits {
+            max_page: capabilities.sync_limits.max_page,
+            max_zones: capabilities.sync_limits.max_zones,
+        },
+        record_limits: NativeRecordLimits {
+            max_operations: capabilities.record_limits.max_operations,
+            max_record_bytes: capabilities.record_limits.max_record_bytes,
+            max_result_bytes: capabilities.record_limits.max_result_bytes,
+        },
     }
 }
 

@@ -15,82 +15,86 @@ fn a_role_binds_to_exactly_one_master_field() {
     assert_eq!(AssetRole::Thumbnail.field_name(), "resJPEGThumbRes");
     assert_eq!(AssetRole::Original.as_str(), "original");
     assert_eq!(AssetRole::Thumbnail.as_str(), "thumbnail");
+    assert_eq!(AssetRole::Original.sdk(), sync_client::AssetRole::Original);
+    assert_eq!(
+        AssetRole::from_sdk(sync_client::AssetRole::Thumbnail),
+        AssetRole::Thumbnail
+    );
 }
 
 #[test]
 fn a_reservation_declares_its_digest_as_lowercase_hex() {
-    // The service validates this against `[0-9a-f]{64}`. Sending the Base64 a
-    // descriptor returns would be refused as a malformed digest — and would
-    // look like a corrupt upload rather than a wrong encoding.
-    let request = ReservationRequest {
-        role: AssetRole::Original,
-        intent: UploadIntent::Create,
-        digest: digest(2048),
+    // The service validates the reservation digest against `[0-9a-f]{64}`.
+    // Sending the Base64 a descriptor returns would be refused as a malformed
+    // digest — and would look like a corrupt upload rather than a wrong
+    // encoding.
+    let sdk = sdk_digest(&digest(2048)).unwrap();
+    assert_eq!(sdk.size(), 2048);
+    assert_eq!(sdk.hex(), digest(2048).hex);
+    assert_eq!(sdk.base64(), digest(2048).base64);
+
+    let uppercase = ContentDigest {
+        hex: digest(2048).hex.to_uppercase(),
+        ..digest(2048)
     };
-    let wire = ReserveToken {
-        record_name: "master-1",
-        record_type: super::super::receive::MASTER_RECORD_TYPE,
-        field_name: request.role.field_name(),
-        options: ReserveOptions {
-            role: request.role,
-            intent: request.intent,
-            expected_size: request.digest.size,
-            expected_sha256: &request.digest.hex,
-        },
+    assert!(sdk_digest(&uppercase).is_err());
+    let base64 = ContentDigest {
+        hex: digest(2048).base64,
+        ..digest(2048)
     };
-    let encoded = serde_json::to_string(&wire).unwrap();
-    assert!(
-        encoded.contains("\"recordType\":\"CPLMaster\""),
-        "{encoded}"
-    );
-    assert!(
-        encoded.contains("\"fieldName\":\"resOriginalRes\""),
-        "{encoded}"
-    );
-    assert!(encoded.contains("\"role\":\"original\""), "{encoded}");
-    assert!(encoded.contains("\"intent\":\"create\""), "{encoded}");
-    assert!(encoded.contains("\"expectedSize\":2048"), "{encoded}");
-    assert!(
-        encoded.contains("\"expectedSha256\":\"378917252f9fe3815a145ab2f7d9900b68c68956f6fac068fdc9d987b7e7a419\""),
-        "{encoded}"
-    );
-    assert!(
-        !encoded.contains("N4kXJS"),
-        "base64 must not reach a reservation"
+    assert!(sdk_digest(&base64).is_err());
+}
+
+#[test]
+fn a_granted_reservation_keeps_its_session_and_asset() {
+    let mapped = native_reservation(sync_client::AssetReservation {
+        role: sync_client::AssetRole::Original,
+        record_name: "master-1".into(),
+        field_name: "resOriginalRes".into(),
+        session_id: "aaaa".into(),
+        state: sync_client::SessionState::Reserved,
+        url: Some("https://s.invalid/v1/uploads/aaaa/content?expires=1&token=t".into()),
+        asset: None,
+    });
+    assert_eq!(mapped.role, AssetRole::Original);
+    assert_eq!(mapped.session_id, "aaaa");
+    assert_eq!(mapped.state, SessionState::Reserved);
+    assert!(mapped.asset.is_none());
+    // The capability URL is carried through for the transfer, not persisted.
+    assert!(mapped.url.contains("token=t"));
+    assert_eq!(
+        sdk_reservation(&mapped).state,
+        sync_client::SessionState::Reserved
     );
 }
 
 #[test]
-fn a_granted_reservation_is_read_from_the_tokens_own_extension() {
-    let response: ReserveResponse = serde_json::from_str(
-        r#"{"tokens":[
-            {"recordName":"master-1","fieldName":"resOriginalRes",
-             "url":"https://s.invalid/v1/uploads/aaaa/content?expires=1&token=t",
-             "_syncserver":{"sessionId":"aaaa","state":"Reserved"}},
-            {"recordName":"master-1","fieldName":"resJPEGThumbRes",
-             "url":"https://s.invalid/v1/uploads/bbbb/content?expires=1&token=t",
-             "_syncserver":{"sessionId":"bbbb","state":"Reserved"}}
-        ]}"#,
-    )
-    .unwrap();
-    assert_eq!(response.tokens.len(), 2);
-    assert_eq!(
-        response.tokens[0].options.as_ref().unwrap().session_id,
-        "aaaa"
-    );
-    assert_eq!(
-        response.tokens[0].options.as_ref().unwrap().state,
-        SessionState::Reserved
-    );
-    // The role is recovered from the field, not from ordering.
-    assert_eq!(
-        role_from_field(&response.tokens[0].field_name),
-        AssetRole::Original
-    );
-    assert_eq!(
-        role_from_field(&response.tokens[1].field_name),
-        AssetRole::Thumbnail
-    );
+fn a_published_reservation_carries_the_only_trustworthy_asset_id() {
+    let mapped = native_reservation(sync_client::AssetReservation {
+        role: sync_client::AssetRole::Thumbnail,
+        record_name: "master-1".into(),
+        field_name: "resJPEGThumbRes".into(),
+        session_id: "bbbb".into(),
+        state: sync_client::SessionState::Published,
+        url: None,
+        asset: Some(sync_client::AssetDescriptor {
+            asset_id: "bbbb".into(),
+            size: 71,
+            file_checksum: "N4kXJS+f44FaFFqy99mQC2jGiVb2+sBo/cnZh7fnpBk=".into(),
+            checksum_algorithm: "SHA256".into(),
+            mime_type: "image/png".into(),
+            width: Some(2),
+            height: Some(2),
+            download_url: None,
+            receipt: None,
+        }),
+    });
+    assert_eq!(mapped.state, SessionState::Published);
+    let asset = mapped.asset.unwrap();
+    assert_eq!(asset.asset_id, "bbbb");
+    assert_eq!(asset.size, 71);
+    assert_eq!(asset.mime_type, "image/png");
+    assert_eq!(mapped.url, "");
 }
 
 #[test]
@@ -114,24 +118,6 @@ fn session_states_distinguish_success_from_a_terminal_failure() {
 }
 
 #[test]
-fn an_upload_answer_names_its_result_under_single_file() {
-    // There is no top-level assetId: a client reading one would see nothing.
-    let response: UploadResponse = serde_json::from_str(
-        r#"{"singleFile":{"assetId":"bbbb","size":71,
-             "fileChecksum":"N4kXJS+f44FaFFqy99mQC2jGiVb2+sBo/cnZh7fnpBk=",
-             "checksumAlgorithm":"SHA256","mimeType":"image/png","width":2,"height":2}}"#,
-    )
-    .unwrap();
-    assert_eq!(response.single_file.asset_id, "bbbb");
-    assert_eq!(response.single_file.size, 71);
-    assert_eq!(
-        response.single_file.file_checksum,
-        "N4kXJS+f44FaFFqy99mQC2jGiVb2+sBo/cnZh7fnpBk="
-    );
-    assert_eq!(response.single_file.mime_type, "image/png");
-}
-
-#[test]
 fn a_described_asset_carries_a_fresh_capability() {
     let described: DownloadDescriptor = serde_json::from_str(
         r#"{"assetId":"bbbb","size":71,
@@ -148,48 +134,62 @@ fn a_described_asset_carries_a_fresh_capability() {
 
 #[test]
 fn transfer_failures_map_onto_their_recoveries() {
-    let checksum = transfer_error(
-        400,
-        br#"{"serverErrorCode":"CHECKSUM_MISMATCH","reason":"digest differs"}"#,
-    );
+    let checksum = transfer_error(sync_client::Error::ChecksumMismatch {
+        expected: "aa".into(),
+        actual: "bb".into(),
+    });
     assert!(matches!(checksum, TransferError::ChecksumMismatch(_)));
     // The bytes are gone either way, so a mismatch is not retried in place.
-    assert!(checksum.to_string().contains("CHECKSUM") || checksum.to_string().contains("digest"));
+    assert!(checksum.to_string().contains("checksum"));
 
     assert!(matches!(
-        transfer_error(
-            400,
-            br#"{"serverErrorCode":"UPLOAD_SIZE_MISMATCH","reason":"short"}"#
-        ),
+        transfer_error(sync_client::Error::SizeMismatch {
+            expected: 71,
+            actual: 70,
+        }),
         TransferError::SizeMismatch(_)
     ));
+    for (code, reason) in [
+        ("CHECKSUM_MISMATCH", "digest differs"),
+        ("UPLOAD_SIZE_MISMATCH", "short"),
+        ("INVALID_THUMBNAIL", "too wide"),
+        ("UPLOAD_TIMEOUT", "idle"),
+    ] {
+        let mapped = transfer_error(sync_client::Error::UploadRejected {
+            code: code.into(),
+            reason: reason.into(),
+        });
+        if code == "CHECKSUM_MISMATCH" {
+            assert!(matches!(mapped, TransferError::ChecksumMismatch(_)));
+        } else if code == "UPLOAD_SIZE_MISMATCH" {
+            assert!(matches!(mapped, TransferError::SizeMismatch(_)));
+        } else if code == "INVALID_THUMBNAIL" {
+            assert!(matches!(mapped, TransferError::InvalidThumbnail(_)));
+        } else {
+            assert!(matches!(mapped, TransferError::SessionFailed(_)));
+        }
+    }
     assert!(matches!(
-        transfer_error(
-            400,
-            br#"{"serverErrorCode":"INVALID_THUMBNAIL","reason":"too wide"}"#
-        ),
-        TransferError::InvalidThumbnail(_)
-    ));
-    assert!(matches!(
-        transfer_error(
-            409,
-            br#"{"serverErrorCode":"UPLOAD_LEASE_LOST","reason":"gone"}"#
-        ),
+        transfer_error(sync_client::Error::UploadRejected {
+            code: "UPLOAD_LEASE_LOST".into(),
+            reason: "gone".into(),
+        }),
         TransferError::LeaseLost
     ));
     assert!(matches!(
-        transfer_error(
-            408,
-            br#"{"serverErrorCode":"UPLOAD_TIMEOUT","reason":"idle"}"#
-        ),
+        transfer_error(sync_client::Error::LeaseLost),
+        TransferError::LeaseLost
+    ));
+    assert!(matches!(
+        transfer_error(sync_client::Error::UploadFailed("session gone".into())),
         TransferError::SessionFailed(_)
     ));
     // An unrecognised code is not guessed at.
     assert!(matches!(
-        transfer_error(
-            500,
-            br#"{"serverErrorCode":"INTERNAL_ERROR","reason":"boom"}"#
-        ),
+        transfer_error(sync_client::Error::UploadRejected {
+            code: "INTERNAL_ERROR".into(),
+            reason: "boom".into(),
+        }),
         TransferError::Transport(_)
     ));
 }
