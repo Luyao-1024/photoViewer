@@ -13,6 +13,7 @@
 //! here is that the *transfer* is real.
 
 mod common;
+use common::sync_server::{server_binary, ServerProcess};
 #[path = "native_sync_assets/logging.rs"]
 mod logging;
 
@@ -23,7 +24,6 @@ mod presence;
 mod upload_failures;
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use photo_viewer::core::sync::content::{snapshot_source, ContentDigest};
@@ -40,26 +40,8 @@ use serde_json::json;
 // read-modify-write changes so trash-backend setup cannot overwrite Sync On.
 static PREFERENCES: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn server_binary() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("SYNC_SERVER_BIN") {
-        let path = PathBuf::from(path);
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-    for build in ["debug", "release"] {
-        let path = Path::new("../syncserver/target")
-            .join(build)
-            .join("syncserver");
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-    None
-}
-
 struct Server {
-    child: Child,
+    child: ServerProcess,
     base_url: String,
     api_key: String,
     #[allow(dead_code)]
@@ -83,18 +65,31 @@ impl Server {
         let port = free_port();
         let base_url = format!("http://127.0.0.1:{port}/");
 
-        let child = Command::new(&binary)
-            .env("SYNC_DATA_DIR", &data)
-            .env("SYNC_API_KEY_FILE", root.path().join("api.key"))
-            .env("SYNC_SIGNING_KEY_FILE", root.path().join("signing.key"))
-            .env("SYNC_BIND", format!("127.0.0.1:{port}"))
-            .env("SYNC_PUBLIC_BASE_URL", &base_url)
-            .env("SYNC_LEASE_TTL_SECS", ttl.to_string())
-            .env("SYNC_LEASE_HEARTBEAT_SECS", heartbeat.to_string())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn syncserver");
+        let bind = format!("127.0.0.1:{port}");
+        let data_dir = data.to_str().expect("utf-8 path");
+        let api_key_file = root.path().join("api.key");
+        let signing_key_file = root.path().join("signing.key");
+        let ttl = ttl.to_string();
+        let heartbeat = heartbeat.to_string();
+        let child = ServerProcess::spawn(
+            &binary,
+            &[
+                ("SYNC_DATA_DIR", data_dir),
+                (
+                    "SYNC_API_KEY_FILE",
+                    api_key_file.to_str().expect("utf-8 path"),
+                ),
+                (
+                    "SYNC_SIGNING_KEY_FILE",
+                    signing_key_file.to_str().expect("utf-8 path"),
+                ),
+                ("SYNC_BIND", bind.as_str()),
+                ("SYNC_PUBLIC_BASE_URL", base_url.as_str()),
+                ("SYNC_LEASE_TTL_SECS", ttl.as_str()),
+                ("SYNC_LEASE_HEARTBEAT_SECS", heartbeat.as_str()),
+            ],
+        )
+        .expect("spawn syncserver");
         let mut server = Self {
             child,
             base_url,
@@ -135,12 +130,8 @@ impl Server {
     }
 }
 
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
+// The server process is stopped by `ServerProcess`'s own `Drop`, which also
+// covers the case where this `Server` is dropped during a panic unwind.
 
 /// A lease walked to `create`, which is the only phase a reservation accepts.
 fn lease_at_create(client: &NativeClient, zone: &NativeZone) -> UploadLease {

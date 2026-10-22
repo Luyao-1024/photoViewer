@@ -793,6 +793,46 @@ cargo build --locked --manifest-path ../syncserver/Cargo.toml
 cargo test --locked --test native_sync_probe -- --nocapture
 ```
 
+## SyncServer process lifetime
+
+Several suites run a real `syncserver` process. That process must not outlive
+the test, because a surviving server keeps its data-directory lock, its
+listening socket and its memory — and it accumulates across runs, so a machine
+that ran the suite a few times ends up with dozens of idle servers and the next
+run cannot bind the port it expects.
+
+A `Drop` that kills the child is not sufficient on its own: a test run can end
+without running any destructor. `cargo test` interrupted with Ctrl-C kills the
+test binary, a killed test binary runs no destructor, and a panic in a detached
+thread can outlive the test body.
+
+`tests/common/sync_server.rs` is the single entry point for starting the
+server. It holds three guarantees:
+
+1. **Process group** — the server leads its own process group (`setpgid`), so
+   the terminal's Ctrl-C does not reach it and the harness, not the terminal,
+   decides when it stops.
+2. **`PR_SET_PDEATHSIG`** — the server asks the kernel to `SIGKILL` it when
+   the test binary dies. The kernel enforces this, so it holds even when the
+   parent is killed with `SIGKILL` and no destructor runs. This is the backstop
+   for every case `Drop` cannot cover.
+3. **`Drop`** — the ordinary path. The server is asked to stop gracefully
+   (`SIGTERM`, which the service handles by draining) and is then reaped; one
+   that ignores the request is killed outright.
+
+Use `sync_server::server_binary()` to locate the binary, `ServerProcess` to
+hold it and `sync_server::run_cli` for one-shot subcommands such as
+`users create`. Both get the same protection, so an interrupted run cannot
+leave a half-finished `users create` holding the data-directory lock either.
+
+`tools/verify-sync-server-cleanup.sh` checks the guarantee directly: it starts
+a server through the same mechanism and then `SIGKILL`s the parent, so no
+destructor can run. Only the kernel backstop can reclaim the server.
+
+```bash
+tools/verify-sync-server-cleanup.sh
+```
+
 ## Native SyncServer durable receive
 
 `tests/native_sync_receive.rs` drives the same real binary through the receive

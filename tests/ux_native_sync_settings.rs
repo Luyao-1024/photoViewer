@@ -3,6 +3,7 @@ mod common;
 use common::{
     interaction::{descendants, Ui},
     shell::Shell,
+    sync_server::{run_cli, server_binary, ServerProcess},
 };
 use gtk::subclass::prelude::ObjectSubclassIsExt;
 use gtk4 as gtk;
@@ -19,24 +20,6 @@ fn named<T: IsA<gtk::Widget> + glib::object::IsClass + Clone + glib::object::Obj
         .unwrap_or_else(|| panic!("missing widget {name}"))
 }
 use gtk::glib;
-fn server_binary() -> Option<std::path::PathBuf> {
-    if let Ok(path) = std::env::var("SYNC_SERVER_BIN") {
-        let path = std::path::PathBuf::from(path);
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-    for build in ["debug", "release"] {
-        let path = std::path::Path::new("../syncserver/target")
-            .join(build)
-            .join("syncserver");
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-    None
-}
-
 #[test]
 fn native_settings_probe_drafts_and_scope_use_real_controls() {
     if server_binary().is_none() {
@@ -685,15 +668,14 @@ fn open_task_menu(shell: &Shell, id: i64) {
 }
 
 struct LocalServer {
-    child: std::process::Child,
+    /// Owned through the shared harness: the process group and the
+    /// kernel-level parent-death backstop make sure the server cannot outlive
+    /// the test, even when the test binary is killed outright.
+    ///
+    /// Held only for its `Drop`, which is what stops the server.
+    _child: ServerProcess,
     endpoint: String,
     _root: tempfile::TempDir,
-}
-impl Drop for LocalServer {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
 }
 impl LocalServer {
     fn start(runtime: &tokio::runtime::Runtime) -> Self {
@@ -717,21 +699,30 @@ impl LocalServer {
         let address = listener.local_addr().unwrap();
         drop(listener);
         let endpoint = format!("http://{address}/");
-        let child = std::process::Command::new(
-            std::env::var_os("SYNC_SERVER_BIN")
-                .unwrap_or_else(|| "../syncserver/target/debug/syncserver".into()),
+        let address = address.to_string();
+        let binary = server_binary().expect("syncserver binary");
+        let data_dir = data.to_str().expect("utf-8 path");
+        let api_key_file = root.path().join("api.key");
+        let signing_key_file = root.path().join("signing.key");
+        let child = ServerProcess::spawn(
+            &binary,
+            &[
+                ("SYNC_DATA_DIR", data_dir),
+                (
+                    "SYNC_API_KEY_FILE",
+                    api_key_file.to_str().expect("utf-8 path"),
+                ),
+                (
+                    "SYNC_SIGNING_KEY_FILE",
+                    signing_key_file.to_str().expect("utf-8 path"),
+                ),
+                ("SYNC_BIND", address.as_str()),
+                ("SYNC_PUBLIC_BASE_URL", endpoint.as_str()),
+            ],
         )
-        .env("SYNC_DATA_DIR", data)
-        .env("SYNC_API_KEY_FILE", root.path().join("api.key"))
-        .env("SYNC_SIGNING_KEY_FILE", root.path().join("signing.key"))
-        .env("SYNC_BIND", address.to_string())
-        .env("SYNC_PUBLIC_BASE_URL", &endpoint)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
+        .expect("spawn syncserver");
         let server = Self {
-            child,
+            _child: child,
             endpoint,
             _root: root,
         };
@@ -748,26 +739,26 @@ impl LocalServer {
             assert!(std::time::Instant::now() < deadline, "server did not start");
             std::thread::sleep(Duration::from_millis(50));
         }
-        use std::io::Write;
         for username in ["alice", "bob"] {
-            let mut admin = std::process::Command::new(
-                std::env::var_os("SYNC_SERVER_BIN")
-                    .unwrap_or_else(|| "../syncserver/target/debug/syncserver".into()),
+            let admin_data = server._root.path().join("data");
+            let admin_api = server._root.path().join("api.key");
+            let admin_signing = server._root.path().join("signing.key");
+            let admin = run_cli(
+                &binary,
+                &["users", "create", username, "--password-stdin"],
+                &[
+                    ("SYNC_DATA_DIR", admin_data.to_str().expect("utf-8 path")),
+                    ("SYNC_API_KEY_FILE", admin_api.to_str().expect("utf-8 path")),
+                    (
+                        "SYNC_SIGNING_KEY_FILE",
+                        admin_signing.to_str().expect("utf-8 path"),
+                    ),
+                ],
+                &[],
+                &"x".repeat(32),
             )
-            .args(["users", "create", username, "--password-stdin"])
-            .env("SYNC_DATA_DIR", server._root.path().join("data"))
-            .env("SYNC_API_KEY_FILE", server._root.path().join("api.key"))
-            .env(
-                "SYNC_SIGNING_KEY_FILE",
-                server._root.path().join("signing.key"),
-            )
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .unwrap();
-            writeln!(admin.stdin.take().unwrap(), "{}", "x".repeat(32)).unwrap();
-            assert!(admin.wait().unwrap().success());
+            .expect("run users create");
+            assert!(admin.success());
         }
         server
     }

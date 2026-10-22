@@ -15,39 +15,20 @@ mod common;
 
 use std::io::Write;
 use std::net::TcpListener;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use common::sync_server::{server_binary, ServerProcess};
 use photo_viewer::core::sync::SyncError;
 use photo_viewer::core::sync::{NativeEndpoint, NativePinnedScope, SyncService};
-
-/// Locate the server binary: explicit override first, then the sibling
-/// checkout's debug and release trees.
-fn server_binary() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("SYNC_SERVER_BIN") {
-        let path = PathBuf::from(path);
-        if path.is_file() {
-            return Some(path);
-        }
-        eprintln!("SYNC_SERVER_BIN={path:?} does not exist; ignoring it");
-    }
-    for build in ["debug", "release"] {
-        let path = Path::new("../syncserver/target")
-            .join(build)
-            .join("syncserver");
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-    None
-}
 
 /// One server instance bound to a free loopback port with a fresh data
 /// directory. `publicBaseURL` is the actual listener address, which is what a
 /// real deployment announces and what the client's same-origin rule accepts.
 struct Server {
-    child: Child,
+    /// Owned through the shared harness: the process group and the
+    /// kernel-level parent-death backstop make sure the server cannot outlive
+    /// the test, even when the test binary is killed outright.
+    child: ServerProcess,
     base_url: String,
     api_key: String,
     #[allow(dead_code)]
@@ -69,19 +50,26 @@ impl Server {
         let port = free_loopback_port();
         let base_url = format!("http://127.0.0.1:{port}/");
 
-        let mut command = Command::new(&binary);
-        command
-            .env("SYNC_DATA_DIR", root.path().join("data"))
-            .env("SYNC_API_KEY_FILE", root.path().join("api.key"))
-            .env("SYNC_SIGNING_KEY_FILE", root.path().join("signing.key"))
-            .env("SYNC_BIND", format!("127.0.0.1:{port}"))
-            .env("SYNC_PUBLIC_BASE_URL", format!("http://127.0.0.1:{port}"))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        for (key, value) in extra_env {
-            command.env(key, value);
-        }
-        let child = command.spawn().expect("spawn syncserver");
+        let data_dir = root.path().join("data");
+        let api_key_file = root.path().join("api.key");
+        let signing_key_file = root.path().join("signing.key");
+        let mut environment: Vec<(&str, &str)> = vec![
+            ("SYNC_DATA_DIR", data_dir.to_str().expect("utf-8 path")),
+            (
+                "SYNC_API_KEY_FILE",
+                api_key_file.to_str().expect("utf-8 path"),
+            ),
+            (
+                "SYNC_SIGNING_KEY_FILE",
+                signing_key_file.to_str().expect("utf-8 path"),
+            ),
+        ];
+        let bind = format!("127.0.0.1:{port}");
+        let public = format!("http://127.0.0.1:{port}");
+        environment.push(("SYNC_BIND", bind.as_str()));
+        environment.push(("SYNC_PUBLIC_BASE_URL", public.as_str()));
+        environment.extend_from_slice(extra_env);
+        let child = ServerProcess::spawn(&binary, &environment).expect("spawn syncserver");
         let mut server = Self {
             child,
             base_url,
@@ -120,12 +108,8 @@ impl Server {
     }
 }
 
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
+// The server process is stopped by `ServerProcess`'s own `Drop`, which also
+// covers the case where this `Server` is dropped during a panic unwind.
 
 fn write_secret(root: &tempfile::TempDir, name: &str, value: String) -> String {
     use std::os::unix::fs::OpenOptionsExt;

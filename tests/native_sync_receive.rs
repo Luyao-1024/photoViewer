@@ -16,9 +16,8 @@
 //! the suite skips (rather than faking a pass) when it is absent.
 
 mod common;
+use common::sync_server::{server_binary, ServerProcess};
 
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use photo_viewer::core::sync::native::receive::{ZoneId, SUPPORTED_RECORD_TYPES};
@@ -28,27 +27,8 @@ use photo_viewer::core::sync::{
 };
 use serde_json::{json, Value};
 
-fn server_binary() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("SYNC_SERVER_BIN") {
-        let path = PathBuf::from(path);
-        if path.is_file() {
-            return Some(path);
-        }
-        eprintln!("SYNC_SERVER_BIN={path:?} does not exist; ignoring it");
-    }
-    for build in ["debug", "release"] {
-        let path = Path::new("../syncserver/target")
-            .join(build)
-            .join("syncserver");
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-    None
-}
-
 struct Server {
-    child: Child,
+    child: ServerProcess,
     base_url: String,
     api_key: String,
     #[allow(dead_code)]
@@ -68,16 +48,27 @@ impl Server {
         let port = free_port();
         let base_url = format!("http://127.0.0.1:{port}/");
 
-        let child = Command::new(&binary)
-            .env("SYNC_DATA_DIR", &data)
-            .env("SYNC_API_KEY_FILE", root.path().join("api.key"))
-            .env("SYNC_SIGNING_KEY_FILE", root.path().join("signing.key"))
-            .env("SYNC_BIND", format!("127.0.0.1:{port}"))
-            .env("SYNC_PUBLIC_BASE_URL", &base_url)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn syncserver");
+        let bind = format!("127.0.0.1:{port}");
+        let data_dir = data.to_str().expect("utf-8 path");
+        let api_key_file = root.path().join("api.key");
+        let signing_key_file = root.path().join("signing.key");
+        let child = ServerProcess::spawn(
+            &binary,
+            &[
+                ("SYNC_DATA_DIR", data_dir),
+                (
+                    "SYNC_API_KEY_FILE",
+                    api_key_file.to_str().expect("utf-8 path"),
+                ),
+                (
+                    "SYNC_SIGNING_KEY_FILE",
+                    signing_key_file.to_str().expect("utf-8 path"),
+                ),
+                ("SYNC_BIND", bind.as_str()),
+                ("SYNC_PUBLIC_BASE_URL", base_url.as_str()),
+            ],
+        )
+        .expect("spawn syncserver");
 
         let mut server = Self {
             child,

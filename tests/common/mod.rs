@@ -8,6 +8,7 @@ pub mod db;
 pub mod interaction;
 pub mod shell;
 pub mod sidebar;
+pub mod sync_server;
 use image::{ImageBuffer, Rgb};
 use std::io::{Seek, SeekFrom};
 use std::path::PathBuf;

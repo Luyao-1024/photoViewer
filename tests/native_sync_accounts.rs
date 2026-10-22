@@ -6,31 +6,9 @@ use photo_viewer::core::{
     events::{ChangeSource, DomainEventSender},
     sync::{SyncDirection, SyncService, UploadScope},
 };
-use std::{
-    io::Write,
-    path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
-fn server_binary() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("SYNC_SERVER_BIN") {
-        let path = PathBuf::from(path);
-        if path.is_file() {
-            return Some(path);
-        }
-        eprintln!("SYNC_SERVER_BIN={path:?} does not exist; ignoring it");
-    }
-    for build in ["debug", "release"] {
-        let path = Path::new("../syncserver/target")
-            .join(build)
-            .join("syncserver");
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-    None
-}
+use common::sync_server::{run_cli, server_binary, ServerProcess};
 
 fn skip() {
     eprintln!(
@@ -39,15 +17,14 @@ fn skip() {
     );
 }
 struct Server {
-    child: Child,
+    /// Owned through the shared harness: the process group and the
+    /// kernel-level parent-death backstop make sure the server cannot outlive
+    /// the test, even when the test binary is killed outright.
+    ///
+    /// Held only for its `Drop`, which is what stops the server.
+    _child: ServerProcess,
     endpoint: String,
     _root: tempfile::TempDir,
-}
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
 }
 impl Server {
     async fn start() -> Self {
@@ -62,47 +39,51 @@ impl Server {
         let signing = root.path().join("signing.key");
         std::fs::write(&signing, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=").unwrap();
         std::fs::set_permissions(&signing, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let binary = std::env::var_os("SYNC_SERVER_BIN")
-            .unwrap_or_else(|| "../syncserver/target/debug/syncserver".into());
+        let binary = server_binary().expect("syncserver binary");
         let api = root.path().join("api.key");
         std::fs::write(&api, "synthetic-legacy-key-0000000000000000").unwrap();
         std::fs::set_permissions(&api, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let data_dir = data.to_str().expect("utf-8 path");
+        let signing_key = signing.to_str().expect("utf-8 path");
         for name in if legacy { vec![] } else { vec!["alice", "bob"] } {
-            let mut child = Command::new(&binary)
-                .args(["users", "create", name, "--password-stdin"])
-                .env("SYNC_DATA_DIR", &data)
-                .env("SYNC_SIGNING_KEY_FILE", &signing)
-                .env_remove("SYNC_API_KEY_FILE")
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .unwrap();
-            writeln!(child.stdin.take().unwrap(), "synthetic account password").unwrap();
-            assert!(child.wait().unwrap().success());
+            // A stray `SYNC_API_KEY_FILE` in the developer's environment would
+            // put the service in legacy single-account mode, so it is removed
+            // explicitly for the multi-user flow.
+            let status = run_cli(
+                &binary,
+                &["users", "create", name, "--password-stdin"],
+                &[
+                    ("SYNC_DATA_DIR", data_dir),
+                    ("SYNC_SIGNING_KEY_FILE", signing_key),
+                ],
+                &["SYNC_API_KEY_FILE"],
+                "synthetic account password",
+            )
+            .expect("run users create");
+            assert!(status.success());
         }
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         drop(listener);
         let endpoint = format!("http://{address}/");
-        let mut command = Command::new(binary);
+        let address = address.to_string();
+        let mut environment: Vec<(&str, &str)> = vec![
+            ("SYNC_DATA_DIR", data_dir),
+            ("SYNC_SIGNING_KEY_FILE", signing_key),
+            ("SYNC_BIND", address.as_str()),
+            ("SYNC_PUBLIC_BASE_URL", endpoint.as_str()),
+            ("SYNC_ZONES", "PrimarySync,ArchiveSync"),
+        ];
+        let mut cleared: Vec<&str> = Vec::new();
         if legacy {
-            command.env("SYNC_API_KEY_FILE", &api);
+            environment.push(("SYNC_API_KEY_FILE", api.to_str().expect("utf-8 path")));
         } else {
-            command.env_remove("SYNC_API_KEY_FILE");
+            cleared.push("SYNC_API_KEY_FILE");
         }
-        let child = command
-            .env("SYNC_DATA_DIR", &data)
-            .env("SYNC_SIGNING_KEY_FILE", &signing)
-            .env("SYNC_BIND", address.to_string())
-            .env("SYNC_PUBLIC_BASE_URL", &endpoint)
-            .env("SYNC_ZONES", "PrimarySync,ArchiveSync")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
+        let child = ServerProcess::spawn_without(&binary, &environment, &cleared)
+            .expect("spawn syncserver");
         let server = Self {
-            child,
+            _child: child,
             endpoint,
             _root: root,
         };
@@ -389,29 +370,32 @@ async fn explicit_legacy_owner_login_preserves_the_existing_photo_and_progress()
     assert_eq!(settled.outstanding, 0);
     let progress = service.store().native_progress(job.id).unwrap().unwrap();
     let source_bytes = std::fs::read(&source).unwrap();
-    let binary = std::env::var_os("SYNC_SERVER_BIN")
-        .unwrap_or_else(|| "../syncserver/target/debug/syncserver".into());
-    let mut admin = Command::new(binary)
-        .args([
+    let binary = server_binary().expect("syncserver binary");
+    let admin_data = server._root.path().join("data");
+    let admin_signing = server._root.path().join("signing.key");
+    let admin_api = server._root.path().join("api.key");
+    let admin = run_cli(
+        &binary,
+        &[
             "users",
             "create",
             "owner",
             "--adopt-legacy",
             "--password-stdin",
-        ])
-        .env("SYNC_DATA_DIR", server._root.path().join("data"))
-        .env(
-            "SYNC_SIGNING_KEY_FILE",
-            server._root.path().join("signing.key"),
-        )
-        .env("SYNC_API_KEY_FILE", server._root.path().join("api.key"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    writeln!(admin.stdin.take().unwrap(), "synthetic account password").unwrap();
-    assert!(admin.wait().unwrap().success());
+        ],
+        &[
+            ("SYNC_DATA_DIR", admin_data.to_str().expect("utf-8 path")),
+            (
+                "SYNC_SIGNING_KEY_FILE",
+                admin_signing.to_str().expect("utf-8 path"),
+            ),
+            ("SYNC_API_KEY_FILE", admin_api.to_str().expect("utf-8 path")),
+        ],
+        &[],
+        "synthetic account password",
+    )
+    .expect("run users create");
+    assert!(admin.success());
     assert!(service.run_cycle(job.id).await.is_err());
     assert_eq!(
         service.store().native_progress(job.id).unwrap().unwrap(),
